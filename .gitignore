@@ -1,0 +1,13 @@
+*.ll
+*.o
+*.milc
+/main
+/minilang
+/compiler
+/tests/array_test
+/tests/nested_test
+/tests/require_path
+/tests/fib
+/tests/hello
+/tests/require_test
+.DS_Store
