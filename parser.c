@@ -424,6 +424,9 @@ static Node *parse_func(Parser *p, int is_native) {
 /* ===================== require module system ===================== */
 static char g_script_dir[1024] = ".";
 static char g_syslib_dir[1024] = "syslib";
+/* Names of modules currently being loaded, used to detect circular requires. */
+static char *g_loading_modules[64];
+static int g_loading_count = 0;
 void parser_set_search_dirs(const char *script_dir, const char *syslib_dir) {
     if (script_dir) { snprintf(g_script_dir, sizeof(g_script_dir), "%s", script_dir); }
     if (syslib_dir) { snprintf(g_syslib_dir, sizeof(g_syslib_dir), "%s", syslib_dir); }
@@ -562,6 +565,21 @@ static void load_module(Parser *p, const char *module_name, int search_syslib_on
         fprintf(stderr, "Parse error: cannot find module '%s' (searched %s)\n", module_name, dirs[0]);
         exit(1);
     }
+    /* Detect circular requires: if this module is already being loaded, the
+       require chain loops back on itself. Report it cleanly instead of
+       recursing until the stack overflows. */
+    for (int li = 0; li < g_loading_count; li++) {
+        if (strcmp(g_loading_modules[li], module_name) == 0) {
+            fprintf(stderr, "Parse error: circular require of module '%s'\n", module_name);
+            exit(1);
+        }
+    }
+    if (g_loading_count < (int)(sizeof(g_loading_modules) / sizeof(g_loading_modules[0]))) {
+        g_loading_modules[g_loading_count++] = strdup(module_name);
+    } else {
+        fprintf(stderr, "Parse error: too many nested requires\n");
+        exit(1);
+    }
     // Lex and parse module source
     Lexer *lexer = lexer_new(src);
     lex(lexer);
@@ -642,6 +660,8 @@ static void load_module(Parser *p, const char *module_name, int search_syslib_on
     parser_free(mp);
     free(lexer);
     free(src);
+    /* Done loading this module: allow future requires of it again. */
+    if (g_loading_count > 0) free(g_loading_modules[--g_loading_count]);
 }
 /* Parse a require statement: require A; / require x from A; / require x,y from A; / ... in cwd|syslib */
 static void parse_require(Parser *p) {
