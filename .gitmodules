@@ -1,0 +1,3 @@
+[submodule "syslib"]
+	path = syslib
+	url = https://github.com/HFunction2013/minilang-syslib
