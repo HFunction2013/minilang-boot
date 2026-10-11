@@ -42,6 +42,7 @@ int program_add_func(Program *prog, const char *name, int address, int params) {
     f->address = address;
     f->param_count = params;
     f->local_count = 0;
+    f->is_native = 0; /* realloc may leave garbage in grown slots */
     return prog->func_count++;
 }
 

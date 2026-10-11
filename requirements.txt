@@ -1,0 +1,3 @@
+# The native-exe backend now uses LLVM project binaries (llc + clang/ld.lld).
+# No Python packages are required. Point LLVM_DIR at an LLVM install, or have
+# `llc` and `clang` on PATH.

@@ -458,7 +458,23 @@ static int build_bytecode(const char *file) {
     free(src);
     return 0;
 }
-/* build -e: compile to native executable via LLVM */
+/* build -e: compile to native executable via LLVM project binaries.
+ *
+ * Pipeline (no Python/llvmlite):
+ *   1. generate_llvm_ir() writes <base>.ll
+ *   2. `llc -filetype=obj -O2 <base>.ll -o <base>.o`   (LLVM codegen)
+ *   3. `clang -O2 <base>.o runtime.c -o <base>`          (LLVM linker/driver)
+ *
+ * Tools are resolved via $LLVM_DIR/bin first, then PATH. Override the linker
+ * with $LLVM_LINKER (default: clang). */
+static void llvm_tool(const char *tool, char *out, size_t outsz) {
+    const char *dir = getenv("LLVM_DIR");
+    if (dir && dir[0]) {
+        snprintf(out, outsz, "%s/bin/%s", dir, tool);
+        if (access(out, X_OK) == 0) return;
+    }
+    snprintf(out, outsz, "%s", tool); // rely on PATH
+}
 static int build_executable(const char *file) {
     char *src = read_file(file);
     set_dirs_from_file(file);
@@ -480,7 +496,7 @@ static int build_executable(const char *file) {
     fputs(ir, f);
     fclose(f);
     free(ir);
-    char cmd_buf[2048];
+    char cmd_buf[3072];
     char exe_dir[1024];
     {
         const char *d = getenv("MINILANG_DIR");
@@ -490,12 +506,25 @@ static int build_executable(const char *file) {
             snprintf(exe_dir, sizeof(exe_dir), ".");
         }
     }
-    snprintf(cmd_buf, sizeof(cmd_buf), "python3 %s/ir_compile.py %s %s", exe_dir, llpath, opath);
+    /* 1) llc: LLVM IR -> native object file */
+    char llc[512]; llvm_tool("llc", llc, sizeof(llc));
+    snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -filetype=obj %s -o %s",
+             llc, llpath, opath);
+    fprintf(stderr, "  $ %s\n", cmd_buf);
     int ret = system(cmd_buf);
-    if (ret != 0) { fprintf(stderr, "IR compilation failed\n"); exit(1); }
-    snprintf(cmd_buf, sizeof(cmd_buf), "gcc -o %s %s %s/runtime.c -O2 2>&1", binpath, opath, exe_dir);
+    if (ret != 0) { fprintf(stderr, "LLVM llc compilation failed (set LLVM_DIR or put llc on PATH)\n"); exit(1); }
+
+    /* 2) clang/LLVM: link object + C runtime into an executable */
+    const char *linker = getenv("LLVM_LINKER");
+    if (!linker || !linker[0]) linker = "clang";
+    char linkbin[512];
+    if (strchr(linker, '/')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
+    else llvm_tool(linker, linkbin, sizeof(linkbin));
+    snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -no-pie -o %s %s %s/runtime.c",
+             linkbin, binpath, opath, exe_dir);
+    fprintf(stderr, "  $ %s\n", cmd_buf);
     ret = system(cmd_buf);
-    if (ret != 0) { fprintf(stderr, "Link failed\n"); exit(1); }
+    if (ret != 0) { fprintf(stderr, "LLVM link failed (set LLVM_LINKER or install clang)\n"); exit(1); }
     printf("Executable built: %s\n", binpath);
     parser_free(parser);
     lexer_free(lexer);
