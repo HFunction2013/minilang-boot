@@ -160,7 +160,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "    -b, --bytecode     write bytecode file (.milc, magic \"!milc\")\n");
     fprintf(stderr, "    -e, --executable   write native executable (LLVM IR + link, default)\n");
     fprintf(stderr, "  repl              Start interactive REPL\n");
-    fprintf(stderr, "  self-test         Run self-hosting verification\n");
+    fprintf(stderr, "  self-test [file]  Run self-hosting verification (compiler.mil, default cwd)\n");
     exit(1);
 }
 static void dump_bytecode_text(Program *prog) {
@@ -531,11 +531,22 @@ static int build_executable(const char *file) {
     free(src);
     return 0;
 }
-static void self_test(void) {
-    const char *self = "compiler.mil";
+static void self_test(const char *self) {
     /* Step 1: boot compiler compiles compiler.mil -> text A */
     /* Use fork so failures don't kill the parent shell */
     printf("=== Self-hosting test ===\n");
+    FILE *probe = fopen(self, "r");
+    if (!probe) {
+        fprintf(stderr,
+                "Cannot open file: %s\n"
+                "  compiler.mil lives in the minilang-compiler checkout (it was moved\n"
+                "  out of this repo when the toolchain split). Run 'minilang self-test'\n"
+                "  from there, or pass the path explicitly, e.g.:\n"
+                "  minilang self-test ../minilang-compiler/compiler.mil\n",
+                self);
+        exit(1);
+    }
+    fclose(probe);
     pid_t pid = fork();
     if (pid == 0) {
         char *src = read_file(self);
@@ -562,7 +573,7 @@ int main(int argc, char **argv) {
         repl("syslib");
         return 0;
     }
-    if (strcmp(cmd, "self-test") == 0) { self_test(); return 0; }
+    if (strcmp(cmd, "self-test") == 0) { self_test(argc > 2 ? argv[2] : "compiler.mil"); return 0; }
     if (strcmp(cmd, "run") == 0) {
         if (argc < 3) usage(argv[0]);
         return run_file(argv[2], argc - 2, argv + 2);
