@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 static int g_argc = 0;
 static char **g_argv = NULL;
@@ -372,4 +373,65 @@ Value ml_readall(void) {
     buf[len] = '\0';
     Value v = {TAG_STR, (int64_t)(intptr_t)buf};
     return v;
+}
+
+/* ===================== Native (C-implemented) functions =====================
+ * These mirror native.c but use the LLVM Value calling convention (each arg is
+ * a Value, return is a Value) so the compiled native executable can call them
+ * directly. The llvm_gen backend redirects calls to `native func` declarations
+ * to these @ml_native_* symbols (by base name, matching ml_native_lookup). */
+
+/* sqrt(n) -> floor(sqrt(n)) as int (base-2 digit algorithm, same as native.c) */
+Value ml_native_sqrt(Value n) {
+    int64_t x = n.tag == TAG_INT ? n.payload : 0;
+    if (x < 0) x = 0;
+    int64_t r = 0, b = 1;
+    while (b <= x / 2) b <<= 1;
+    while (b > 0) {
+        if ((r + b) * (r + b) <= x) r += b;
+        b >>= 1;
+    }
+    return vint(r);
+}
+
+/* abs(n) -> |n| */
+Value ml_native_abs(Value n) {
+    int64_t x = n.tag == TAG_INT ? n.payload : 0;
+    return vint(x < 0 ? -x : x);
+}
+
+/* time() -> seconds since Unix epoch */
+Value ml_native_time(void) {
+    return vint((int64_t)time(NULL));
+}
+
+/* clock_ms() -> monotonic milliseconds since process start */
+Value ml_native_clock_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return vint((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+/* getenv(name) -> string value ("" if unset) */
+Value ml_native_getenv(Value name) {
+    const char *v = getenv(cstr(name));
+    return vstr(v ? v : "");
+}
+
+/* cwrite(s) -> write string directly to stdout, return 1 */
+Value ml_native_cwrite(Value s) {
+    fputs(cstr(s), stdout);
+    fflush(stdout);
+    return vint(1);
+}
+
+/* exit(code) -> terminate with given int code */
+Value ml_native_exit(Value code) {
+    exit((int)(code.tag == TAG_INT ? code.payload : 0));
+    return vnil(); /* unreachable */
+}
+
+/* csystem(cmd) -> run shell command, return exit code */
+Value ml_native_csystem(Value cmd) {
+    return vint(system(cstr(cmd)));
 }
