@@ -1,12 +1,11 @@
 #include "minilang.h"
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
+#if defined(_MSC_VER)
 #include <windows.h>
 #include <direct.h>
 #include <io.h>
-#define access _access
-#define X_OK 0
+/* minilang.h already maps strdup/getcwd/access/realpath for MSVC. */
 #define stat _stat
 #define S_ISDIR(m) ((m) & _S_IFDIR)
 #else
@@ -489,11 +488,22 @@ static int build_bytecode(const char *file) {
  * with $LLVM_LINKER (default: clang). */
 static void llvm_tool(const char *tool, char *out, size_t outsz) {
     const char *dir = getenv("LLVM_DIR");
+#ifdef _WIN32
+    /* On Windows LLVM ships binaries as llc.exe, clang.exe in bin/ */
+    char tool_exe[256];
+    snprintf(tool_exe, sizeof(tool_exe), "%s.exe", tool);
+    if (dir && dir[0]) {
+        snprintf(out, outsz, "%s/bin/%s", dir, tool_exe);
+        if (access(out, 0) == 0) return;
+    }
+    snprintf(out, outsz, "%s", tool_exe);
+#else
     if (dir && dir[0]) {
         snprintf(out, outsz, "%s/bin/%s", dir, tool);
         if (access(out, X_OK) == 0) return;
     }
-    snprintf(out, outsz, "%s", tool); // rely on PATH
+    snprintf(out, outsz, "%s", tool);
+#endif
 }
 static int build_executable(const char *file) {
     char *src = read_file(file);
@@ -510,7 +520,11 @@ static int build_executable(const char *file) {
     char llpath[1024], opath[1024], binpath[1024];
     snprintf(llpath, sizeof(llpath), "%s.ll", base);
     snprintf(opath, sizeof(opath), "%s.o", base);
+#ifdef _WIN32
+    snprintf(binpath, sizeof(binpath), "%s.exe", base);
+#else
     snprintf(binpath, sizeof(binpath), "%s", base);
+#endif
     FILE *f = fopen(llpath, "w");
     if (!f) { fprintf(stderr, "Cannot write %s\n", llpath); exit(1); }
     fputs(ir, f);
@@ -538,10 +552,15 @@ static int build_executable(const char *file) {
     const char *linker = getenv("LLVM_LINKER");
     if (!linker || !linker[0]) linker = "clang";
     char linkbin[512];
-    if (strchr(linker, '/')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
+    if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
     else llvm_tool(linker, linkbin, sizeof(linkbin));
+#ifdef _WIN32
+    snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -o %s %s %s/runtime.c",
+             linkbin, binpath, opath, exe_dir);
+#else
     snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -no-pie -o %s %s %s/runtime.c",
              linkbin, binpath, opath, exe_dir);
+#endif
     fprintf(stderr, "  $ %s\n", cmd_buf);
     ret = system(cmd_buf);
     if (ret != 0) { fprintf(stderr, "LLVM link failed (set LLVM_LINKER or install clang)\n"); exit(1); }

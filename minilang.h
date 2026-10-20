@@ -8,6 +8,25 @@
 #include <stdarg.h>
 #include <ctype.h>
 
+/* ===================== MSVC / Windows compatibility ===================== */
+#ifdef _MSC_VER
+/* MSVC doesn't have POSIX names for these CRT functions. */
+#define strdup     _strdup
+#define getcwd     _getcwd
+#define access     _access
+#define unlink     _unlink
+#define PATH_MAX   _MAX_PATH
+/* realpath(): POSIX. MSVC has _fullpath which has the same semantics for
+   our use (resolve a path into an absolute path in the second buffer). */
+static inline char *realpath(const char *path, char *resolved) {
+    return _fullpath(resolved, path, _MAX_PATH) ? resolved : NULL;
+}
+/* __attribute__((unused)) is GCC/Clang only. MSVC: no-op. */
+#define __attribute__(x)
+/* MSVC C mode needs inline spelled __inline */
+#define inline __inline
+#endif
+
 /* ===================== Value types ===================== */
 typedef enum {
     VAL_NIL,
