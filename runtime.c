@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static int g_argc = 0;
 static char **g_argv = NULL;
@@ -407,9 +410,16 @@ Value ml_native_time(void) {
 
 /* clock_ms() -> monotonic milliseconds since process start */
 Value ml_native_clock_ms(void) {
+#ifdef _WIN32
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return vint((int64_t)(count.QuadPart * 1000 / freq.QuadPart));
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return vint((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+#endif
 }
 
 /* getenv(name) -> string value ("" if unset) */
