@@ -18,8 +18,12 @@
  */
 #include "minilang.h"
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <sys/stat.h>
+#endif
 
 /* ===================== Registry ===================== */
 typedef struct {
@@ -98,9 +102,16 @@ static Value n_time(VM *vm, Value *args, int argc) {
 /* clock_ms() -> milliseconds of CPU/wall time since process start */
 static Value n_clock_ms(VM *vm, Value *args, int argc) {
     (void)vm; (void)args; (void)argc;
+#ifdef _WIN32
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return make_int((int64_t)(count.QuadPart * 1000 / freq.QuadPart));
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return make_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+#endif
 }
 
 /* getenv(name) -> string value of an environment variable ("" if unset) */

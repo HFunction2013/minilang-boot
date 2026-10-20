@@ -1,9 +1,19 @@
 #include "minilang.h"
-#include <sys/wait.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <direct.h>
+#include <io.h>
+#define access _access
+#define X_OK 0
+#define stat _stat
+#define S_ISDIR(m) ((m) & _S_IFDIR)
+#else
+#include <sys/wait.h>
+#include <unistd.h>
 #include <sys/stat.h>
+#endif
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -281,8 +291,17 @@ static Program *compile_source(const char *src) {
     lexer_free(lexer);
     return prog;
 }
-/* Compile source and run in VM in a forked child (for REPL robustness). Returns child exit code. */
+/* Compile source and run in VM. On POSIX this forks a child for REPL robustness;
+   on Windows (no fork) it runs in-process. Returns child exit code. */
 static int compile_and_run_src(const char *src) {
+#ifdef _WIN32
+    Program *prog = compile_source(src);
+    VM *vm = vm_new(prog);
+    int rc = (void)vm_run(vm), rc2 = rc;
+    vm_free(vm);
+    program_free(prog);
+    return rc2;
+#else
     pid_t pid = fork();
     if (pid < 0) { fprintf(stderr, "fork failed\n"); return 1; }
     if (pid == 0) {
@@ -296,6 +315,7 @@ static int compile_and_run_src(const char *src) {
     int status = 0;
     waitpid(pid, &status, 0);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+#endif
 }
 /* Load a .milc bytecode file, or compile a .mil source. Calls exit(1) on error. */
 static Program *load_or_compile(const char *file) {
@@ -547,6 +567,17 @@ static void self_test(const char *self) {
         exit(1);
     }
     fclose(probe);
+#ifdef _WIN32
+    {
+        char *src = read_file(self);
+        set_dirs_from_file(self);
+        Program *prog = compile_source(src);
+        dump_bytecode_text(prog);
+        program_free(prog);
+        free(src);
+        fflush(NULL);
+    }
+#else
     pid_t pid = fork();
     if (pid == 0) {
         char *src = read_file(self);
@@ -561,6 +592,7 @@ static void self_test(const char *self) {
     int status;
     waitpid(pid, &status, 0);
     (void)status;
+#endif
     printf("(boot compile done - compare via bootstrap_test.sh)\n");
 }
 int main(int argc, char **argv) {
