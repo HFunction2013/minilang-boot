@@ -477,15 +477,6 @@ static int build_bytecode(const char *file) {
     free(src);
     return 0;
 }
-/* build -e: compile to native executable via LLVM project binaries.
- *
- * Pipeline (no Python/llvmlite):
- *   1. generate_llvm_ir() writes <base>.ll
- *   2. `llc -filetype=obj -O2 <base>.ll -o <base>.o`   (LLVM codegen)
- *   3. `clang -O2 <base>.o runtime.c -o <base>`          (LLVM linker/driver)
- *
- * Tools are resolved via $LLVM_DIR/bin first, then PATH. Override the linker
- * with $LLVM_LINKER (default: clang). */
 static void llvm_tool(const char *tool, char *out, size_t outsz) {
     const char *dir = getenv("LLVM_DIR");
 #ifdef _WIN32
@@ -505,7 +496,18 @@ static void llvm_tool(const char *tool, char *out, size_t outsz) {
     snprintf(out, outsz, "%s", tool);
 #endif
 }
-static int build_executable(const char *file) {
+/* build -e [ext.c ...]: compile to native executable via LLVM project
+ * binaries. `exts`/`ext_count` are optional user C extension sources linked
+ * into the executable (native funcs resolve to @ml_native_<base> in them).
+ *
+ * Pipeline (no Python/llvmlite):
+ *   1. generate_llvm_ir() writes <base>.ll
+ *   2. `llc -filetype=obj -O2 <base>.ll -o <base>.o`   (LLVM codegen)
+ *   3. `clang -O2 <base>.o runtime.c [ext.c ...] -o <base>`  (link)
+ *
+ * Tools are resolved via $LLVM_DIR/bin first, then PATH. Override the linker
+ * with $LLVM_LINKER (default: clang). */
+static int build_executable(const char *file, char **exts, int ext_count) {
     char *src = read_file(file);
     set_dirs_from_file(file);
     Lexer *lexer = lexer_new(src);
@@ -540,6 +542,30 @@ static int build_executable(const char *file) {
             snprintf(exe_dir, sizeof(exe_dir), ".");
         }
     }
+    /* Locate runtime.c: it moved to the sibling minilang-boot repo in the
+     * 2026-10 toolchain split. Try alongside the toolchain dir first, then
+     * the sibling repo, matching main.mil's cmd_build_executable fallback. */
+    char rtc[1200];
+    snprintf(rtc, sizeof(rtc), "%s/runtime.c", exe_dir);
+    if (access(rtc, 0) != 0) {
+        snprintf(rtc, sizeof(rtc), "%s/../minilang-boot/runtime.c", exe_dir);
+        if (access(rtc, 0) != 0) {
+            snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+        }
+    }
+    /* Directory of runtime.c — exposed via -I so user extension C files can
+     * #include "minilang_runtime.h". */
+    char rtc_dir[1200];
+    snprintf(rtc_dir, sizeof(rtc_dir), "%s", rtc);
+    {
+        char *slash = strrchr(rtc_dir, '/');
+#ifdef _WIN32
+        char *bs = strrchr(rtc_dir, '\\');
+        if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+        if (slash) *slash = '\0';
+        else strcpy(rtc_dir, ".");
+    }
     /* 1) llc: LLVM IR -> native object file */
     char llc[512]; llvm_tool("llc", llc, sizeof(llc));
     snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -filetype=obj %s -o %s",
@@ -548,19 +574,34 @@ static int build_executable(const char *file) {
     int ret = system(cmd_buf);
     if (ret != 0) { fprintf(stderr, "LLVM llc compilation failed (set LLVM_DIR or put llc on PATH)\n"); exit(1); }
 
-    /* 2) clang/LLVM: link object + C runtime into an executable */
+    /* 2) clang/LLVM: link object + C runtime + user extensions */
     const char *linker = getenv("LLVM_LINKER");
     if (!linker || !linker[0]) linker = "clang";
     char linkbin[512];
     if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
     else llvm_tool(linker, linkbin, sizeof(linkbin));
+    {
+        char *p = cmd_buf;
+        size_t rem = sizeof(cmd_buf);
 #ifdef _WIN32
-    snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -o %s %s %s/runtime.c",
-             linkbin, binpath, opath, exe_dir);
+        int written = snprintf(p, rem, "%s -O2 -I%s -o %s %s %s",
+                 linkbin, rtc_dir, binpath, opath, rtc);
 #else
-    snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -no-pie -o %s %s %s/runtime.c",
-             linkbin, binpath, opath, exe_dir);
+        int written = snprintf(p, rem, "%s -O2 -I%s -no-pie -o %s %s %s",
+                 linkbin, rtc_dir, binpath, opath, rtc);
 #endif
+        if (written < 0 || (size_t)written >= rem) {
+            fprintf(stderr, "command line too long\n"); exit(1);
+        }
+        p += written; rem -= (size_t)written;
+        for (int i = 0; i < ext_count; i++) {
+            int w2 = snprintf(p, rem, " %s", exts[i]);
+            if (w2 < 0 || (size_t)w2 >= rem) {
+                fprintf(stderr, "command line too long\n"); exit(1);
+            }
+            p += w2; rem -= (size_t)w2;
+        }
+    }
     fprintf(stderr, "  $ %s\n", cmd_buf);
     ret = system(cmd_buf);
     if (ret != 0) { fprintf(stderr, "LLVM link failed (set LLVM_LINKER or install clang)\n"); exit(1); }
@@ -675,8 +716,24 @@ int main(int argc, char **argv) {
         }
         if (argc <= idx) usage(argv[0]);
         const char *file = argv[idx];
-        if (mode == 1) return build_bytecode(file);
-        return build_executable(file);
+        /* Remaining arguments (after the source file) are user C extension
+         * sources linked into the executable, e.g. `build -e prog.mil ext.c`. */
+        char **exts = NULL;
+        int ext_count = 0;
+        for (int i = idx + 1; i < argc; i++) {
+            exts = realloc(exts, (size_t)(ext_count + 1) * sizeof(char *));
+            if (!exts) { fprintf(stderr, "out of memory\n"); exit(1); }
+            exts[ext_count++] = argv[i];
+        }
+        int rc;
+        if (mode == 1) {
+            if (ext_count > 0) fprintf(stderr, "Warning: C extensions are ignored for bytecode output\n");
+            rc = build_bytecode(file);
+        } else {
+            rc = build_executable(file, exts, ext_count);
+        }
+        free(exts);
+        return rc;
     }
     usage(argv[0]);
     return 1;

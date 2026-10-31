@@ -20,12 +20,16 @@ clean:
 # The .mil test programs live in the sibling minilang-compiler checkout since
 # the toolchain split (2026-10). Prefer a local tests/ dir when present, then
 # fall back to ../minilang-compiler/tests so `make test` works out of the box.
+# MINILANG_DIR is pointed at the repo that owns the test programs so their
+# `require ... from <module>` resolves against that repo's syslib/.
 test: $(TARGET)
 	@echo "=== Running VM tests ==="
 	@if [ -d tests ]; then \
 		TDIR="tests"; \
+		export MINILANG_DIR="$$(pwd)"; \
 	elif [ -d ../minilang-compiler/tests ]; then \
 		TDIR="../minilang-compiler/tests"; \
+		export MINILANG_DIR="$$(cd ../minilang-compiler && pwd)"; \
 	else \
 		echo "No tests found (looked for tests/ and ../minilang-compiler/tests)"; \
 		exit 1; \

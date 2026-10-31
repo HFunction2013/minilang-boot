@@ -543,9 +543,19 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
             char **args = malloc(sizeof(char*) * n->call.arg_count);
             for (int i = 0; i < n->call.arg_count; i++) args[i] = compile_expr_ir(g, n->call.args[i]);
             char *r = new_temp(g);
-            // Build call
+            // Build call. Native functions (is_native) are C-implemented as
+            // @ml_native_<basename> (base-name fallback matches ml_native_lookup).
+            int is_nat = g->parser->funcs[fi]->func.is_native;
             char callbuf[2048];
-            int pos = snprintf(callbuf, sizeof(callbuf), "  %s = call %%Value @user_%s(", r, cname);
+            int pos;
+            if (is_nat) {
+                const char *base = cname;
+                const char *dot = strrchr(base, '.');
+                if (dot) base = dot + 1;
+                pos = snprintf(callbuf, sizeof(callbuf), "  %s = call %%Value @ml_native_%s(", r, base);
+            } else {
+                pos = snprintf(callbuf, sizeof(callbuf), "  %s = call %%Value @user_%s(", r, cname);
+            }
             for (int i = 0; i < n->call.arg_count; i++) {
                 if (i > 0) pos += snprintf(callbuf + pos, sizeof(callbuf) - pos, ", ");
                 pos += snprintf(callbuf + pos, sizeof(callbuf) - pos, "%%Value %s", args[i]);
@@ -626,7 +636,46 @@ char *generate_llvm_ir(Parser *p) {
     ir_emit(&g, "declare %%Value @ml_tostring(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_toint(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_strcmp(%%Value, %%Value)\n");
-    ir_emit(&g, "declare %%Value @ml_readall()\n\n");
+    ir_emit(&g, "declare %%Value @ml_readall()\n");
+
+    // Native (C-implemented) functions: declared as @ml_native_<basename>.
+    // Calls to `native func` declarations are redirected there; the C
+    // implementations live in runtime.c (built-ins) or user extension files
+    // linked into the executable. Base-name fallback matches ml_native_lookup.
+    // Deduplicate by base name: the same native (e.g. sqrt) may be declared by
+    // several modules (vm.mil and builtin.mil both declare the builtins).
+    {
+        char **declared = NULL;
+        int declared_count = 0, declared_cap = 0;
+        for (int fi = 0; fi < p->func_count; fi++) {
+            Node *f = p->funcs[fi];
+            if (!f->func.is_native) continue;
+            const char *base = f->func.name;
+            const char *dot = strrchr(base, '.');
+            if (dot) base = dot + 1;
+            int dup = 0;
+            for (int di = 0; di < declared_count; di++) {
+                if (strcmp(declared[di], base) == 0) { dup = 1; break; }
+            }
+            if (dup) continue;
+            if (declared_count >= declared_cap) {
+                declared_cap = declared_cap ? declared_cap * 2 : 8;
+                declared = realloc(declared, sizeof(char*) * declared_cap);
+            }
+            declared[declared_count++] = strdup(base);
+            char decl[1024];
+            int dpos = snprintf(decl, sizeof(decl), "declare %%Value @ml_native_%s(", base);
+            for (int i = 0; i < f->func.param_count; i++) {
+                if (i > 0) dpos += snprintf(decl + dpos, sizeof(decl) - dpos, ", ");
+                dpos += snprintf(decl + dpos, sizeof(decl) - dpos, "%%Value");
+            }
+            dpos += snprintf(decl + dpos, sizeof(decl) - dpos, ")\n");
+            ir_emit(&g, "%s", decl);
+        }
+        for (int di = 0; di < declared_count; di++) free(declared[di]);
+        free(declared);
+    }
+    ir_emit(&g, "\n");
 
     // We'll collect string globals separately and prepend them.
     // Since compile_expr_ir uses a static globals buffer, we need to reset it.
@@ -652,6 +701,9 @@ char *generate_llvm_ir(Parser *p) {
     // Generate each user function
     for (int fi = 0; fi < p->func_count; fi++) {
         Node *f = p->funcs[fi];
+        // Native functions (is_native) are C-implemented as @ml_native_*;
+        // skip the `define` — they are declared above and calls are redirected.
+        if (f->func.is_native) continue;
         g.var_names = NULL; g.var_regs = NULL; g.var_count = 0; g.var_cap = 0;
         g.func_idx = fi;
         g.allocas[0] = '\0'; g.allocas_len = 0;

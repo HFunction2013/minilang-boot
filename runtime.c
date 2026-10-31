@@ -17,7 +17,7 @@ void ml_set_args(int argc, char **argv) {
 }
 
 typedef struct {
-    int64_t tag;     /* 0=nil, 1=int, 2=string, 3=array */
+    int64_t tag;     /* 0=nil, 1=int, 2=string, 3=array, 4=opaque */
     int64_t payload; /* int value, or pointer cast to i64 */
 } Value;
 
@@ -30,6 +30,32 @@ typedef struct {
 #define TAG_INT 1
 #define TAG_STR 2
 #define TAG_ARR 3
+#define TAG_OPAQUE 4
+
+/* Opaque values: an arbitrary C pointer wrapped as a minilang Value. User C
+ * extensions (linked via `build -e prog.mil ext.c`) use ml_opaque_create() to
+ * return handles (FILE*, buffers, structs...) and ml_opaque_ptr() to unwrap
+ * them. minilang only passes them around; it cannot inspect the payload. */
+Value ml_opaque_create(void *p) {
+    Value v = {TAG_OPAQUE, (int64_t)(intptr_t)p};
+    return v;
+}
+void *ml_opaque_ptr(Value v) {
+    if (v.tag != TAG_OPAQUE) { fprintf(stderr, "opaque pointer expected\n"); exit(1); }
+    return (void*)(intptr_t)v.payload;
+}
+
+/* Public helpers for user C extensions (declared in minilang_runtime.h). */
+const char *ml_cstr(Value v) {
+    if (v.tag != TAG_STR) { fprintf(stderr, "string expected\n"); exit(1); }
+    return (const char*)(intptr_t)v.payload;
+}
+int64_t ml_int(Value v) {
+    if (v.tag != TAG_INT) { fprintf(stderr, "int expected\n"); exit(1); }
+    return v.payload;
+}
+Value ml_mkint(int64_t x) { Value v = {TAG_INT, x}; return v; }
+Value ml_mkstr(const char *s) { Value v = {TAG_STR, (int64_t)(intptr_t)strdup(s ? s : "")}; return v; }
 
 static Value vnil(void) { Value v = {TAG_NIL, 0}; return v; }
 static Value vint(int64_t x) { Value v = {TAG_INT, x}; return v; }
@@ -50,6 +76,7 @@ void ml_print(Value v, int32_t newline) {
         case TAG_NIL: printf("nil"); break;
         case TAG_INT: printf("%lld", (long long)v.payload); break;
         case TAG_STR: printf("%s", cstr(v)); break;
+        case TAG_OPAQUE: printf("<opaque>"); break;
         case TAG_ARR: {
             Array *a = carr(v);
             printf("[");
@@ -71,6 +98,7 @@ static int truthy(Value v) {
         case TAG_INT: return v.payload != 0;
         case TAG_STR: return strlen(cstr(v)) > 0;
         case TAG_ARR: return 1;
+        case TAG_OPAQUE: return v.payload != 0;
     }
     return 0;
 }
@@ -129,6 +157,12 @@ static int cmp(Value a, Value b) {
     }
     if (a.tag == TAG_STR && b.tag == TAG_STR) return strcmp(cstr(a), cstr(b));
     if (a.tag == TAG_NIL && b.tag == TAG_NIL) return 0;
+    /* Opaque handles compare by pointer identity (== / != only). */
+    if (a.tag == TAG_OPAQUE && b.tag == TAG_OPAQUE) {
+        if (a.payload < b.payload) return -1;
+        if (a.payload > b.payload) return 1;
+        return 0;
+    }
     return -2;
 }
 
@@ -351,6 +385,7 @@ Value ml_tostring(Value v) {
         return vstr(buf);
     }
     if (v.tag == TAG_NIL) return vstr("nil");
+    if (v.tag == TAG_OPAQUE) return vstr("<opaque>");
     return vstr("<array>");
 }
 
