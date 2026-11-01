@@ -33,6 +33,7 @@ typedef enum {
     VAL_INT,
     VAL_STRING,
     VAL_ARRAY,
+    VAL_OPAQUE,
 } ValueType;
 
 typedef struct Value Value;

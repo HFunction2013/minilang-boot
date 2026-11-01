@@ -1,15 +1,25 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -std=gnu11
-SRCS = value.c lexer.c parser.c bytecode.c vm.c llvm_gen.c milc_io.c native.c main.c
+SRCS = value.c lexer.c parser.c bytecode.c vm.c llvm_gen.c milc_io.c native.c runtime.c main.c
 OBJS = $(SRCS:.c=.o)
 TARGET = minilang
+
+# run -e loads user extensions with dlopen(); the VM/runtime symbols those
+# extensions call (ml_opaque_ptr, ml_print, ...) must be exported from the
+# main binary. Linux/macOS use --export-dynamic; -ldl for older glibc.
+UNAME := $(shell uname)
+ifeq ($(UNAME),Linux)
+EXPORT_LDFLAGS = -Wl,--export-dynamic -ldl
+else
+EXPORT_LDFLAGS = -Wl,-export_dynamic
+endif
 
 .PHONY: all clean test
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(EXPORT_LDFLAGS) -o $@ $^
 
 %.o: %.c minilang.h
 	$(CC) $(CFLAGS) -c -o $@ $<

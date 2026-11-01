@@ -56,6 +56,29 @@ int64_t ml_int(Value v) {
 }
 Value ml_mkint(int64_t x) { Value v = {TAG_INT, x}; return v; }
 Value ml_mkstr(const char *s) { Value v = {TAG_STR, (int64_t)(intptr_t)strdup(s ? s : "")}; return v; }
+Value ml_nil(void) { Value v = {TAG_NIL, 0}; return v; }
+
+/* Type predicates */
+int ml_is_nil(Value v)    { return v.tag == TAG_NIL; }
+int ml_is_int(Value v)    { return v.tag == TAG_INT; }
+int ml_is_str(Value v)    { return v.tag == TAG_STR; }
+int ml_is_arr(Value v)    { return v.tag == TAG_ARR; }
+int ml_is_opaque(Value v) { return v.tag == TAG_OPAQUE; }
+
+/* Array constructors/accessors (in addition to ml_array_make/get/set) */
+Value ml_mkarray(int64_t len) {
+    Array *a = malloc(sizeof(Array));
+    a->len = len;
+    a->data = len > 0 ? calloc((size_t)len, sizeof(Value)) : NULL;
+    Value nilv = {TAG_NIL, 0};
+    for (int64_t i = 0; i < len; i++) a->data[i] = nilv;
+    Value v = {TAG_ARR, (int64_t)(intptr_t)a};
+    return v;
+}
+int64_t ml_array_len(Value v) {
+    if (v.tag != TAG_ARR) { fprintf(stderr, "array expected\n"); exit(1); }
+    return ((Array*)(intptr_t)v.payload)->len;
+}
 
 static Value vnil(void) { Value v = {TAG_NIL, 0}; return v; }
 static Value vint(int64_t x) { Value v = {TAG_INT, x}; return v; }

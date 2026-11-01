@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
 #endif
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -19,6 +20,7 @@
 
 /* argv[0] as given to main(), used as a last resort to locate the executable. */
 static char g_argv0[4096] = "";
+static void llvm_tool(const char *tool, char *out, size_t outsz);
 
 char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -354,6 +356,265 @@ static int run_file(const char *file, int prog_argc, char **prog_argv) {
     free(src);
     return 0;
 }
+
+/* Directory of runtime.c / minilang_runtime.h — reused to compile user
+ * extensions with the right -I. Mirrors build_executable's resolution. */
+static void get_runtime_dir(char *rtc_dir, size_t sz) {
+    char exe_dir[1024];
+    const char *d = getenv("MINILANG_DIR");
+    if (d && d[0]) snprintf(exe_dir, sizeof(exe_dir), "%s", d);
+    else if (!get_exe_dir(exe_dir, sizeof(exe_dir))) snprintf(exe_dir, sizeof(exe_dir), ".");
+    char rtc[1200];
+    snprintf(rtc, sizeof(rtc), "%s/runtime.c", exe_dir);
+    if (access(rtc, 0) != 0) {
+        snprintf(rtc, sizeof(rtc), "%s/../minilang-boot/runtime.c", exe_dir);
+        if (access(rtc, 0) != 0) snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+    }
+    snprintf(rtc_dir, sz, "%s", rtc);
+    char *slash = strrchr(rtc_dir, '/');
+#ifdef _WIN32
+    char *bs = strrchr(rtc_dir, '\\');
+    if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+    if (slash) *slash = '\0';
+    else strcpy(rtc_dir, ".");
+}
+
+/* Compile a user extension .c into a shared library, then dlopen it and
+ * register every `ml_native_<name>` symbol declared by the program. This is
+ * what makes `minilang run -e prog.mil ext.c` work in the C bootstrap VM.
+ *
+ * Two native signatures are supported:
+ *   - `Value ml_native_<name>(Value ...)` — per-argument style used by the
+ *     LLVM backend (build -e). For run we generate a tiny adapter at load
+ *     time that forwards `(vm, args, argc)` to the per-argument prototype.
+ *   - `Value ml_vm_native_<name>(void *vm, Value *args, int argc)` — VM style;
+ *     registered as-is. */
+static void load_native_extensions(Program *prog, char **exts, int ext_count) {
+    if (ext_count == 0) return;
+    /* Declared natives that still need a symbol or an adapter. */
+    typedef struct { const char *name; int params; int solved; } ExtDecl;
+    ExtDecl *decls = NULL;
+    int nd = 0;
+    for (int i = 0; i < prog->func_count; i++) {
+        FuncInfo *fn = &prog->funcs[i];
+        if (!fn->is_native) continue;
+        decls = realloc(decls, (size_t)(nd + 1) * sizeof(ExtDecl));
+        if (!decls) { fprintf(stderr, "out of memory\n"); exit(1); }
+        decls[nd].name = fn->name;
+        decls[nd].params = fn->param_count;
+        decls[nd].solved = 0;
+        nd++;
+    }
+#ifndef _WIN32
+    /* Pass 1: compile + dlopen each extension, resolve vm-style symbols. */
+    void **handles = calloc((size_t)ext_count, sizeof(void *));
+    for (int e = 0; e < ext_count; e++) {
+        const char *ext = exts[e];
+        char libpath[1024];
+        char cmd_buf[3072];
+        int is_c = 0;
+        size_t el = strlen(ext);
+        if (el > 2 && strcmp(ext + el - 2, ".c") == 0) is_c = 1;
+        if (is_c) {
+            char rtc_dir[1200];
+            get_runtime_dir(rtc_dir, sizeof(rtc_dir));
+            snprintf(libpath, sizeof(libpath), "/tmp/ml_ext_%d_%d.so", (int)getpid(), e);
+            const char *linker = getenv("LLVM_LINKER");
+            if (!linker || !linker[0]) linker = "clang";
+            char linkbin[512];
+            if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
+            else llvm_tool(linker, linkbin, sizeof(linkbin));
+            snprintf(cmd_buf, sizeof(cmd_buf),
+                     "%s -O2 -fPIC -shared -I%s %s -o %s",
+                     linkbin, rtc_dir, ext, libpath);
+            fprintf(stderr, "  $ %s\n", cmd_buf);
+            int ret = system(cmd_buf);
+            if (ret != 0) {
+                fprintf(stderr, "Failed to compile extension %s (set LLVM_LINKER or install clang)\n", ext);
+                exit(1);
+            }
+        } else {
+            snprintf(libpath, sizeof(libpath), "%s", ext);
+        }
+        void *h = dlopen(libpath, RTLD_NOW | RTLD_GLOBAL);
+        if (!h) {
+            fprintf(stderr, "Cannot load extension %s: %s\n", ext, dlerror());
+            exit(1);
+        }
+        handles[e] = h;
+        for (int i = 0; i < nd; i++) {
+            if (decls[i].solved) continue;
+            char sym[512];
+            snprintf(sym, sizeof(sym), "ml_vm_native_%s", decls[i].name);
+            void *f = dlsym(h, sym);
+            if (f) {
+                ml_native_register(decls[i].name, (NativeFn)f);
+                decls[i].solved = 1;
+            }
+        }
+    }
+    /* Pass 2: generate an adapter for per-argument natives. */
+    int need_adapter = 0;
+    for (int i = 0; i < nd; i++) {
+        if (decls[i].solved) continue;
+        char sym[512];
+        int found = 0;
+        for (int e = 0; e < ext_count && !found; e++) {
+            snprintf(sym, sizeof(sym), "ml_native_%s", decls[i].name);
+            if (dlsym(handles[e], sym)) found = 1;
+        }
+        if (!found) {
+            fprintf(stderr, "Extension exports neither ml_native_%s nor "
+                            "ml_vm_native_%s (declared `native func %s`)\n",
+                    decls[i].name, decls[i].name, decls[i].name);
+            exit(1);
+        }
+        need_adapter = 1;
+    }
+    if (need_adapter) {
+        char rtc_dir[1200];
+        get_runtime_dir(rtc_dir, sizeof(rtc_dir));
+        char cpath[1024], apath[1024];
+        snprintf(cpath, sizeof(cpath), "/tmp/ml_adapt_%d.c", (int)getpid());
+        snprintf(apath, sizeof(apath), "/tmp/ml_adapt_%d.so", (int)getpid());
+        FILE *f = fopen(cpath, "w");
+        if (!f) { fprintf(stderr, "Cannot write %s\n", cpath); exit(1); }
+        /* The VM's Value (minilang.h) is {enum type; union{int64,char*,Array}} =
+         * 32 bytes, while extension values (minilang_runtime.h) are
+         * {int64 tag; int64 payload} = 16 bytes. The adapter converts between
+         * the two layouts, otherwise the mixed ABI corrupts the call. */
+        fprintf(f, "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
+        /* The VM's Value (minilang.h) is {enum type; union{int64,char*,Array}} =
+         * 32 bytes, while extension values (minilang_runtime.h) are
+         * {int64 tag; int64 payload} = 16 bytes. The adapter converts between
+         * the two layouts (declared here to match minilang.h exactly), since
+         * a mixed ABI corrupts the call. */
+        fprintf(f, "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <stdint.h>\n");
+        fprintf(f, "typedef enum { VAL_NIL, VAL_INT, VAL_STRING, VAL_ARRAY, VAL_OPAQUE } MLType;\n");
+        fprintf(f, "typedef struct MLValue MLValue;\n");
+        fprintf(f, "typedef struct MLArray { MLValue *items; int count; int cap; } MLArray;\n");
+        fprintf(f, "struct MLValue { MLType type; union { int64_t integer; char *string; MLArray array; } as; };\n");
+        fprintf(f, "#include \"minilang_runtime.h\"\n\n");
+        fprintf(f, "static Value rt_from(MLValue v) {\n");
+        fprintf(f, "    Value r;\n");
+        fprintf(f, "    switch (v.type) {\n");
+        fprintf(f, "        case VAL_NIL: r.tag = 0; r.payload = 0; break;\n");
+        fprintf(f, "        case VAL_INT: r.tag = 1; r.payload = v.as.integer; break;\n");
+        fprintf(f, "        case VAL_STRING: r.tag = 2; r.payload = (int64_t)(intptr_t)strdup(v.as.string ? v.as.string : \"\"); break;\n");
+        fprintf(f, "        case VAL_OPAQUE: r.tag = 4; r.payload = v.as.integer; break;\n");
+        fprintf(f, "        default: fprintf(stderr, \"native adapter: array arguments are not supported in run mode (use build -e)\\n\"); exit(1);\n");
+        fprintf(f, "    }\n    return r;\n}\n");
+        fprintf(f, "static MLValue vm_from(Value r) {\n");
+        fprintf(f, "    MLValue v;\n");
+        fprintf(f, "    switch (r.tag) {\n");
+        fprintf(f, "        case 0: v.type = VAL_NIL; v.as.integer = 0; break;\n");
+        fprintf(f, "        case 1: v.type = VAL_INT; v.as.integer = r.payload; break;\n");
+        fprintf(f, "        case 2: v.type = VAL_STRING; v.as.string = strdup((const char*)(intptr_t)r.payload); break;\n");
+        fprintf(f, "        case 3: fprintf(stderr, \"native adapter: array results are not supported in run mode (use build -e)\\n\"); exit(1);\n");
+        fprintf(f, "        case 4: v.type = VAL_OPAQUE; v.as.integer = r.payload; break;\n");
+        fprintf(f, "    }\n    return v;\n}\n");
+        for (int i = 0; i < nd; i++) {
+            if (decls[i].solved) continue;
+            fprintf(f, "extern Value ml_native_%s(", decls[i].name);
+            for (int p = 0; p < decls[i].params; p++) fprintf(f, "%sValue", p ? ", " : "");
+            fprintf(f, ");\n");
+        }
+        for (int i = 0; i < nd; i++) {
+            if (decls[i].solved) continue;
+            fprintf(f, "MLValue ml_vm_adapter_%s(void *vm, MLValue *args, int argc) {\n", decls[i].name);
+            fprintf(f, "    (void)vm;\n    if (argc != %d) { fprintf(stderr, \"native %s: expected %d args, got %%d\\n\", argc); exit(1); }\n",
+                    decls[i].params, decls[i].name, decls[i].params);
+            fprintf(f, "    return vm_from(ml_native_%s(", decls[i].name);
+            for (int p = 0; p < decls[i].params; p++) fprintf(f, "%srt_from(args[%d])", p ? ", " : "", p);
+            fprintf(f, "));\n}\n");
+        }
+        fclose(f);
+        const char *linker = getenv("LLVM_LINKER");
+        if (!linker || !linker[0]) linker = "clang";
+        char linkbin[512];
+        if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
+        else llvm_tool(linker, linkbin, sizeof(linkbin));
+        char cmd_buf[3072];
+        snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -fPIC -shared -I%s %s -o %s",
+                 linkbin, rtc_dir, cpath, apath);
+        fprintf(stderr, "  $ %s\n", cmd_buf);
+        int ret = system(cmd_buf);
+        if (ret != 0) { fprintf(stderr, "Failed to build native adapter\n"); exit(1); }
+        void *ah = dlopen(apath, RTLD_NOW | RTLD_GLOBAL);
+        if (!ah) { fprintf(stderr, "Cannot load adapter: %s\n", dlerror()); exit(1); }
+        for (int i = 0; i < nd; i++) {
+            if (decls[i].solved) continue;
+            char sym[512];
+            snprintf(sym, sizeof(sym), "ml_vm_adapter_%s", decls[i].name);
+            void *f = dlsym(ah, sym);
+            if (!f) { fprintf(stderr, "adapter symbol %s missing\n", sym); exit(1); }
+            ml_native_register(decls[i].name, (NativeFn)f);
+            decls[i].solved = 1;
+        }
+    }
+    int all_solved = 1;
+    for (int i = 0; i < nd; i++) if (!decls[i].solved) all_solved = 0;
+    if (!all_solved) { fprintf(stderr, "Some declared natives could not be resolved\n"); exit(1); }
+    free(decls);
+    free(handles);
+#else /* _WIN32 */
+    for (int e = 0; e < ext_count; e++) {
+        const char *ext = exts[e];
+        size_t el = strlen(ext);
+        if (el > 2 && strcmp(ext + el - 2, ".c") == 0) {
+            fprintf(stderr,
+                    "run -e with a .c source is not supported on Windows; "
+                    "pre-compile the extension as a DLL exporting "
+                    "ml_vm_native_<name>(void*, Value*, int), or use "
+                    "`build -e prog.mil ext.c` which links statically.\n");
+            exit(1);
+        }
+        HMODULE h = LoadLibraryA(ext);
+        if (!h) { fprintf(stderr, "Cannot load extension %s\n", ext); exit(1); }
+        for (int i = 0; i < nd; i++) {
+            if (decls[i].solved) continue;
+            char sym[512];
+            snprintf(sym, sizeof(sym), "ml_vm_native_%s", decls[i].name);
+            FARPROC f = GetProcAddress(h, sym);
+            if (f) {
+                ml_native_register(decls[i].name, (NativeFn)(void *)f);
+                decls[i].solved = 1;
+            }
+        }
+        if (!decls[0].solved) {
+            /* at least one unresolved: report the first missing name */
+            for (int i = 0; i < nd; i++) {
+                if (!decls[i].solved) {
+                    fprintf(stderr,
+                            "Extension %s lacks ml_vm_native_%s (VM-style)\n",
+                            ext, decls[i].name);
+                    break;
+                }
+            }
+            exit(1);
+        }
+    }
+    free(decls);
+#endif
+}
+
+/* run with user C extensions: compile -> register natives from the loaded
+ * shared libs -> execute. */
+static int run_with_extensions(const char *file, char **exts, int ext_count,
+                               int prog_argc, char **prog_argv) {
+    char *src = read_file(file);
+    set_dirs_from_file(file);
+    Program *prog = compile_source(src);
+    load_native_extensions(prog, exts, ext_count);
+    VM *vm = vm_new(prog);
+    vm_set_args(vm, prog_argc, prog_argv);
+    (void)vm_run(vm);
+    vm_free(vm);
+    program_free(prog);
+    free(src);
+    return 0;
+}
 /* REPL: interactive. Maintains env (func + top-level var declarations) across lines. */
 static void repl(const char *syslib_dir) {
     (void)syslib_dir;
@@ -507,7 +768,7 @@ static void llvm_tool(const char *tool, char *out, size_t outsz) {
  *
  * Tools are resolved via $LLVM_DIR/bin first, then PATH. Override the linker
  * with $LLVM_LINKER (default: clang). */
-static int build_executable(const char *file, char **exts, int ext_count) {
+static int build_executable(const char *file, char **exts, int ext_count, int dynamic) {
     char *src = read_file(file);
     set_dirs_from_file(file);
     Lexer *lexer = lexer_new(src);
@@ -594,8 +855,30 @@ static int build_executable(const char *file, char **exts, int ext_count) {
             fprintf(stderr, "command line too long\n"); exit(1);
         }
         p += written; rem -= (size_t)written;
+        /* Extensions: static mode links the .c sources (default); --dynamic
+         * compiles each .c to a shared library beside the executable and links
+         * it, so the native code can be upgraded without rebuilding. */
         for (int i = 0; i < ext_count; i++) {
-            int w2 = snprintf(p, rem, " %s", exts[i]);
+            char ext_arg[1200];
+            const char *src = exts[i];
+            size_t sl = strlen(src);
+            int is_c = sl > 2 && strcmp(src + sl - 2, ".c") == 0;
+            if (dynamic && is_c) {
+                char sopath[1100];
+                snprintf(sopath, sizeof(sopath), "%s_ext%d.so", base, i);
+                char cmd2[3072];
+                snprintf(cmd2, sizeof(cmd2), "%s -O2 -fPIC -shared -I%s %s -o %s",
+                         linkbin, rtc_dir, src, sopath);
+                fprintf(stderr, "  $ %s\n", cmd2);
+                if (system(cmd2) != 0) {
+                    fprintf(stderr, "Failed to compile shared extension %s\n", src);
+                    exit(1);
+                }
+                snprintf(ext_arg, sizeof(ext_arg), "%s -Wl,-rpath,'$ORIGIN'", sopath);
+            } else {
+                snprintf(ext_arg, sizeof(ext_arg), "%s", src);
+            }
+            int w2 = snprintf(p, rem, " %s", ext_arg);
             if (w2 < 0 || (size_t)w2 >= rem) {
                 fprintf(stderr, "command line too long\n"); exit(1);
             }
@@ -668,6 +951,36 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "self-test") == 0) { self_test(argc > 2 ? argv[2] : "compiler.mil"); return 0; }
     if (strcmp(cmd, "run") == 0) {
         if (argc < 3) usage(argv[0]);
+        if (strcmp(argv[2], "-e") == 0 || strcmp(argv[2], "--executable") == 0) {
+            /* run -e prog.mil [ext.c|ext.so ...] [-- prog args...]
+             * Registers each declared `native func` from the given C
+             * extensions (compiled to a shared lib when given as .c) in the
+             * bootstrap VM before executing. */
+            if (argc < 4) usage(argv[0]);
+            char **exts = NULL;
+            int ext_count = 0;
+            int i = 4;
+            while (i < argc && strcmp(argv[i], "--") != 0) {
+                exts = realloc(exts, (size_t)(ext_count + 1) * sizeof(char *));
+                if (!exts) { fprintf(stderr, "out of memory\n"); exit(1); }
+                exts[ext_count++] = argv[i];
+                i++;
+            }
+            int prog_argc = 0;
+            char **prog_argv = NULL;
+            /* Match plain `run file ...`: prog_argv[0] is the source file. */
+            int nargs = 1 + (i < argc ? argc - i - 1 : 0);
+            prog_argv = calloc((size_t)(nargs + 1), sizeof(char *));
+            if (!prog_argv) { fprintf(stderr, "out of memory\n"); exit(1); }
+            prog_argv[prog_argc++] = (char *)argv[3];
+            if (i < argc) { /* past "--" */
+                for (int j = i + 1; j < argc; j++) prog_argv[prog_argc++] = argv[j];
+            }
+            int rc = run_with_extensions(argv[3], exts, ext_count, prog_argc, prog_argv);
+            free(prog_argv);
+            free(exts);
+            return rc;
+        }
         return run_file(argv[2], argc - 2, argv + 2);
     }
     if (strcmp(cmd, "bytecode") == 0 || strcmp(cmd, "dump-text") == 0) {
@@ -709,10 +1022,13 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "build") == 0) {
         int idx = 2;
         int mode = 0; // 0=executable(default), 1=bytecode
+        int dynamic = 0;
         if (argc > 2 && (strcmp(argv[2], "-b") == 0 || strcmp(argv[2], "--bytecode") == 0)) {
             mode = 1; idx = 3;
         } else if (argc > 2 && (strcmp(argv[2], "-e") == 0 || strcmp(argv[2], "--executable") == 0)) {
             mode = 0; idx = 3;
+            /* build -e --dynamic prog.mil ext.c — link extensions dynamically */
+            if (argc > 3 && strcmp(argv[3], "--dynamic") == 0) { dynamic = 1; idx = 4; }
         }
         if (argc <= idx) usage(argv[0]);
         const char *file = argv[idx];
@@ -730,7 +1046,7 @@ int main(int argc, char **argv) {
             if (ext_count > 0) fprintf(stderr, "Warning: C extensions are ignored for bytecode output\n");
             rc = build_bytecode(file);
         } else {
-            rc = build_executable(file, exts, ext_count);
+            rc = build_executable(file, exts, ext_count, dynamic);
         }
         free(exts);
         return rc;

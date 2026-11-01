@@ -49,6 +49,7 @@ void value_free(Value v) {
             value_free(v.as.array.items[i]);
         free(v.as.array.items);
     }
+    /* VAL_OPAQUE: borrowed pointer, not owned */
 }
 
 void value_print(Value v, int newline) {
@@ -65,6 +66,7 @@ void value_print(Value v, int newline) {
             printf("]");
             break;
         }
+        case VAL_OPAQUE: printf("opaque"); break;
     }
     if (newline) printf("\n");
     fflush(stdout);
@@ -76,6 +78,7 @@ int value_is_truthy(Value v) {
         case VAL_INT: return v.as.integer != 0;
         case VAL_STRING: return strlen(v.as.string) > 0;
         case VAL_ARRAY: return 1;
+        case VAL_OPAQUE: return v.as.integer != 0;
     }
     return 0;
 }
@@ -159,6 +162,9 @@ static int cmp_values(Value a, Value b) {
     if (a.type == VAL_STRING && b.type == VAL_STRING)
         return strcmp(a.as.string, b.as.string);
     if (a.type == VAL_NIL && b.type == VAL_NIL) return 0;
+    /* Opaque values compare by pointer identity (mirrors the C runtime). */
+    if (a.type == VAL_OPAQUE && b.type == VAL_OPAQUE)
+        return a.as.integer == b.as.integer ? 0 : 1;
     return -2; // incomparable
 }
 
@@ -219,6 +225,7 @@ Value value_tostring(Value v) {
     }
     if (v.type == VAL_NIL) return make_string("nil");
     if (v.type == VAL_ARRAY) return make_string("<array>");
+    if (v.type == VAL_OPAQUE) return make_string("<opaque>");
     return make_string("");
 }
 
