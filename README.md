@@ -56,6 +56,51 @@ pointer. New natives are added in `native.c` — no interpreter changes needed.
 Python llvmlite. Point `LLVM_DIR` at an LLVM install, or have `llc`/`clang` on
 `PATH`.
 
+## User C extensions
+
+A `.mil` file can declare a native that a C file supplied on the command line
+implements:
+
+```minilang
+native func scale(x);
+```
+
+Run it straight from source — the boot VM compiles the `.c`, loads it and
+registers the natives it exports:
+
+```bash
+./minilang run -e prog.mil ext.c -- args
+./minilang run -e prog.mil ext.so -- args   # prebuilt (.dll on Windows)
+```
+
+Or link it into a native executable (static by default, `--dynamic` for a
+shared extension):
+
+```bash
+./minilang build -e prog.mil ext.c
+./minilang build -e --dynamic prog.mil ext.c   # extension becomes <base>_extN.so/.dll
+```
+
+Two signatures are accepted: `Value ml_native_<name>(Value ...)` (per argument,
+the style the LLVM backend emits) and `MLValue ml_vm_native_<name>(void*,
+MLValue*, int)` (VM style). The extension API — `ml_nil`, `ml_is_int`,
+`ml_mkarray`, `ml_opaque_create`, ... — is documented in `minilang_runtime.h`.
+
+## Windows
+
+MSVC and MinGW are both supported (everything branches on `_WIN32`; MSVC builds
+through CMake: `cmake -B build && cmake --build build`).
+
+* `run -e` packs the `.c` sources, the generated ABI adapter and `runtime.c` into
+  `%TEMP%\ml_ext_<pid>.dll` and `LoadLibrary`s it. Bundling `runtime.c` keeps the
+  DLL self-contained, since Windows has no `--export-dynamic` equivalent for an
+  executable's symbols.
+* `build -e --dynamic` writes `<base>_extN.dll` plus an import library and links
+  the import library; if the current linker has no import-library support it
+  warns and falls back to static linking, so the executable still runs.
+* Executable discovery uses `GetModuleFileNameA`, `PATH` splits on `;`, and
+  scratch files go to `%TEMP%` — no `/proc/self/exe`, `/tmp` or `:` separator.
+
 ## License
 
 GPL-3.0.

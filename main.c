@@ -1,22 +1,62 @@
 #include "minilang.h"
 #include <stdlib.h>
 #include <string.h>
-#if defined(_MSC_VER)
+#if defined(_WIN32)
+/* Windows (MSVC and MinGW both define _WIN32; only MSVC defines _MSC_VER,
+ * so branch on _WIN32 — MinGW has no dlfcn.h and no <sys/wait.h>). */
 #include <windows.h>
 #include <direct.h>
 #include <io.h>
+#include <process.h>
+#if defined(_MSC_VER)
 /* minilang.h already maps strdup/getcwd/access/realpath for MSVC. */
 #define stat _stat
 #define S_ISDIR(m) ((m) & _S_IFDIR)
+#else
+#include <sys/stat.h>
+#endif
+#define ml_getpid() ((long)_getpid())
 #else
 #include <sys/wait.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dlfcn.h>
+#define ml_getpid() ((long)getpid())
 #endif
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
+
+#if defined(_WIN32)
+#define ML_PATH_SEP '\\'
+#define ML_PATH_LIST_SEP ';'
+#define ML_SHLIB_EXT "dll"
+#else
+#define ML_PATH_SEP '/'
+#define ML_PATH_LIST_SEP ':'
+#define ML_SHLIB_EXT "so"
+#endif
+
+/* Scratch directory (no trailing separator) for transient extension artefacts:
+ * %TEMP% on Windows, /tmp elsewhere. */
+static void ml_tmp_dir(char *out, size_t n) {
+#ifdef _WIN32
+    char buf[MAX_PATH + 4];
+    DWORD len = GetTempPathA(MAX_PATH + 1, buf);
+    if (len > 0 && len < MAX_PATH + 1) {
+        while (len > 0 && (buf[len - 1] == '\\' || buf[len - 1] == '/')) buf[--len] = '\0';
+        snprintf(out, n, "%s", buf);
+        return;
+    }
+    {
+        const char *t = getenv("TEMP");
+        snprintf(out, n, "%s", (t && t[0]) ? t : ".");
+    }
+#else
+    (void)n;
+    snprintf(out, n, "%s", "/tmp");
+#endif
+}
 
 /* argv[0] as given to main(), used as a last resort to locate the executable. */
 static char g_argv0[4096] = "";
@@ -46,9 +86,19 @@ static void abs_dirname(const char *path, char *out, size_t outsz) {
     char buf[4096];
     snprintf(buf, sizeof(buf), "%s", path);
     char *slash = strrchr(buf, '/');
+#ifdef _WIN32
+    /* Windows paths use '\' too; take whichever separator comes last. */
+    char *bslash = strrchr(buf, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+#endif
     if (slash) {
         *slash = '\0';
+#ifdef _WIN32
+        if (!buf[0]) { snprintf(buf, sizeof(buf), "\\"); }
+        else if (strlen(buf) == 2 && buf[1] == ':') { buf[2] = '\\'; buf[3] = '\0'; }
+#else
         if (!buf[0]) { snprintf(buf, sizeof(buf), "/"); }
+#endif
     } else {
         snprintf(buf, sizeof(buf), ".");
     }
@@ -72,6 +122,22 @@ static void abs_dirname(const char *path, char *out, size_t outsz) {
 static int get_exe_dir(char *out, size_t outsz) {
     char exe[4096];
 
+#ifdef _WIN32
+    /* Windows: ask the loader for the full image path (no /proc here). */
+    {
+        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe) - 1);
+        if (n > 0 && n < sizeof(exe)) {
+            exe[n] = '\0';
+            char *slash = strrchr(exe, '\\');
+            if (!slash) slash = strrchr(exe, '/');
+            if (slash && slash != exe) {
+                *slash = '\0';
+                snprintf(out, outsz, "%s", exe);
+                return 1;
+            }
+        }
+    }
+#else
     /* Linux */
     {
         ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -87,6 +153,7 @@ static int get_exe_dir(char *out, size_t outsz) {
             }
         }
     }
+#endif
 #if defined(__APPLE__)
     /* macOS: there is no /proc, so ask the dynamic loader instead */
     {
@@ -105,7 +172,7 @@ static int get_exe_dir(char *out, size_t outsz) {
 #endif
     /* Last resort: argv[0], searched through PATH when it is a bare name */
     if (g_argv0[0]) {
-        if (strchr(g_argv0, '/')) {
+        if (strchr(g_argv0, '/') || strchr(g_argv0, '\\')) {
             abs_dirname(g_argv0, out, outsz);
             return 1;
         }
@@ -113,14 +180,26 @@ static int get_exe_dir(char *out, size_t outsz) {
         if (path_env) {
             char pathcopy[8192];
             snprintf(pathcopy, sizeof(pathcopy), "%s", path_env);
-            char *save = NULL;
-            for (char *p = strtok_r(pathcopy, ":", &save); p; p = strtok_r(NULL, ":", &save)) {
-                char cand[8192];
-                snprintf(cand, sizeof(cand), "%s/%s", p, g_argv0);
-                if (access(cand, X_OK) == 0) {
-                    abs_dirname(cand, out, outsz);
-                    return 1;
+            /* Split on the platform's PATH separator (';' on Windows, ':' elsewhere)
+             * without strtok_r: MSVC has no strtok_r and MinGW's availability varies. */
+            const char *start = pathcopy;
+            while (start && *start) {
+                const char *sep = strchr(start, ML_PATH_LIST_SEP);
+                char one[8192];
+                size_t len = sep ? (size_t)(sep - start) : strlen(start);
+                if (len >= sizeof(one)) len = sizeof(one) - 1;
+                memcpy(one, start, len);
+                one[len] = '\0';
+                if (one[0]) {
+                    char cand[8192];
+                    snprintf(cand, sizeof(cand), "%s%c%s", one, ML_PATH_SEP, g_argv0);
+                    /* access(..., 0) = existence check; X_OK does not exist on Windows. */
+                    if (access(cand, 0) == 0) {
+                        abs_dirname(cand, out, outsz);
+                        return 1;
+                    }
                 }
+                start = sep ? sep + 1 : NULL;
             }
         }
     }
@@ -298,10 +377,10 @@ static int compile_and_run_src(const char *src) {
 #ifdef _WIN32
     Program *prog = compile_source(src);
     VM *vm = vm_new(prog);
-    int rc = (void)vm_run(vm), rc2 = rc;
+    (void)vm_run(vm);
     vm_free(vm);
     program_free(prog);
-    return rc2;
+    return 0;
 #else
     pid_t pid = fork();
     if (pid < 0) { fprintf(stderr, "fork failed\n"); return 1; }
@@ -380,6 +459,9 @@ static void get_runtime_dir(char *rtc_dir, size_t sz) {
     else strcpy(rtc_dir, ".");
 }
 
+/* One `native func` declaration awaiting a symbol or an adapter. */
+typedef struct { const char *name; int params; int solved; } ExtDecl;
+
 /* Compile a user extension .c into a shared library, then dlopen it and
  * register every `ml_native_<name>` symbol declared by the program. This is
  * what makes `minilang run -e prog.mil ext.c` work in the C bootstrap VM.
@@ -390,10 +472,79 @@ static void get_runtime_dir(char *rtc_dir, size_t sz) {
  *     time that forwards `(vm, args, argc)` to the per-argument prototype.
  *   - `Value ml_vm_native_<name>(void *vm, Value *args, int argc)` — VM style;
  *     registered as-is. */
+#ifdef _WIN32
+/* Windows cannot probe an object file for symbols before linking, so the
+ * native calling style is read off the extension source: an extension that
+ * mentions ml_vm_native_<name> is VM-style, everything else is treated as
+ * per-argument style (the documented default). */
+static int src_mentions(const char *path, const char *sym) {
+    char *src = read_file(path);
+    int found = strstr(src, sym) != NULL;
+    free(src);
+    return found;
+}
+
+/* Write the Windows adapter: one dllexport'ed entry point for every declared
+ * native, so the host never needs to export or locate user symbols. Per
+ * argument natives are bridged between the 32-byte VM Value and the 16-byte
+ * runtime Value; VM-style natives are forwarded unchanged. */
+static void write_adapter_source_win(const char *cpath, ExtDecl *decls, int nd,
+                                     const int *vm_style) {
+    FILE *f = fopen(cpath, "w");
+    if (!f) { fprintf(stderr, "Cannot write %s\n", cpath); exit(1); }
+    fprintf(f, "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <stdint.h>\n");
+    fprintf(f, "#if defined(_WIN32)\n#define ML_EXPORT __declspec(dllexport)\n#else\n#define ML_EXPORT\n#endif\n");
+    fprintf(f, "typedef enum { VAL_NIL, VAL_INT, VAL_STRING, VAL_ARRAY, VAL_OPAQUE } MLType;\n");
+    fprintf(f, "typedef struct MLValue MLValue;\n");
+    fprintf(f, "typedef struct MLArray { MLValue *items; int count; int cap; } MLArray;\n");
+    fprintf(f, "struct MLValue { MLType type; union { int64_t integer; char *string; MLArray array; } as; };\n");
+    fprintf(f, "#include \"minilang_runtime.h\"\n\n");
+    fprintf(f, "static Value rt_from(MLValue v) {\n");
+    fprintf(f, "    Value r;\n");
+    fprintf(f, "    switch (v.type) {\n");
+    fprintf(f, "        case VAL_NIL: r.tag = 0; r.payload = 0; break;\n");
+    fprintf(f, "        case VAL_INT: r.tag = 1; r.payload = v.as.integer; break;\n");
+    fprintf(f, "        case VAL_STRING: r.tag = 2; r.payload = (int64_t)(intptr_t)strdup(v.as.string ? v.as.string : \"\"); break;\n");
+    fprintf(f, "        case VAL_OPAQUE: r.tag = 4; r.payload = v.as.integer; break;\n");
+    fprintf(f, "        default: fprintf(stderr, \"native adapter: array arguments are not supported in run mode (use build -e)\\n\"); exit(1);\n");
+    fprintf(f, "    }\n    return r;\n}\n");
+    fprintf(f, "static MLValue vm_from(Value r) {\n");
+    fprintf(f, "    MLValue v;\n");
+    fprintf(f, "    switch (r.tag) {\n");
+    fprintf(f, "        case 0: v.type = VAL_NIL; v.as.integer = 0; break;\n");
+    fprintf(f, "        case 1: v.type = VAL_INT; v.as.integer = r.payload; break;\n");
+    fprintf(f, "        case 2: v.type = VAL_STRING; v.as.string = strdup((const char*)(intptr_t)r.payload); break;\n");
+    fprintf(f, "        case 3: fprintf(stderr, \"native adapter: array results are not supported in run mode (use build -e)\\n\"); exit(1);\n");
+    fprintf(f, "        case 4: v.type = VAL_OPAQUE; v.as.integer = r.payload; break;\n");
+    fprintf(f, "    }\n    return v;\n}\n");
+    for (int i = 0; i < nd; i++) {
+        if (vm_style[i]) {
+            fprintf(f, "extern MLValue ml_vm_native_%s(void *, MLValue *, int);\n", decls[i].name);
+        } else {
+            fprintf(f, "extern Value ml_native_%s(", decls[i].name);
+            for (int p = 0; p < decls[i].params; p++) fprintf(f, "%sValue", p ? ", " : "");
+            fprintf(f, ");\n");
+        }
+    }
+    for (int i = 0; i < nd; i++) {
+        if (vm_style[i]) {
+            fprintf(f, "ML_EXPORT MLValue ml_vm_adapter_%s(void *vm, MLValue *args, int argc) {\n", decls[i].name);
+            fprintf(f, "    return ml_vm_native_%s(vm, args, argc);\n}\n", decls[i].name);
+        } else {
+            fprintf(f, "ML_EXPORT MLValue ml_vm_adapter_%s(void *vm, MLValue *args, int argc) {\n", decls[i].name);
+            fprintf(f, "    (void)vm;\n    if (argc != %d) { fprintf(stderr, \"native %s: expected %d args, got %%d\\n\", argc); exit(1); }\n",
+                    decls[i].params, decls[i].name, decls[i].params);
+            fprintf(f, "    return vm_from(ml_native_%s(", decls[i].name);
+            for (int p = 0; p < decls[i].params; p++) fprintf(f, "%srt_from(args[%d])", p ? ", " : "", p);
+            fprintf(f, "));\n}\n");
+        }
+    }
+    fclose(f);
+}
+#endif
+
 static void load_native_extensions(Program *prog, char **exts, int ext_count) {
     if (ext_count == 0) return;
-    /* Declared natives that still need a symbol or an adapter. */
-    typedef struct { const char *name; int params; int solved; } ExtDecl;
     ExtDecl *decls = NULL;
     int nd = 0;
     for (int i = 0; i < prog->func_count; i++) {
@@ -406,8 +557,16 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
         decls[nd].solved = 0;
         nd++;
     }
+    if (nd == 0) {
+        /* No `native func` declarations in this program: nothing to register.
+         * (The old Windows branch dereferenced decls[0] unconditionally.) */
+        free(decls);
+        return;
+    }
 #ifndef _WIN32
     /* Pass 1: compile + dlopen each extension, resolve vm-style symbols. */
+    char tmp_dir[1024];
+    ml_tmp_dir(tmp_dir, sizeof(tmp_dir));
     void **handles = calloc((size_t)ext_count, sizeof(void *));
     for (int e = 0; e < ext_count; e++) {
         const char *ext = exts[e];
@@ -419,7 +578,8 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
         if (is_c) {
             char rtc_dir[1200];
             get_runtime_dir(rtc_dir, sizeof(rtc_dir));
-            snprintf(libpath, sizeof(libpath), "/tmp/ml_ext_%d_%d.so", (int)getpid(), e);
+            snprintf(libpath, sizeof(libpath), "%s%cml_ext_%ld_%d.so",
+                     tmp_dir, ML_PATH_SEP, ml_getpid(), e);
             const char *linker = getenv("LLVM_LINKER");
             if (!linker || !linker[0]) linker = "clang";
             char linkbin[512];
@@ -476,15 +636,10 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
         char rtc_dir[1200];
         get_runtime_dir(rtc_dir, sizeof(rtc_dir));
         char cpath[1024], apath[1024];
-        snprintf(cpath, sizeof(cpath), "/tmp/ml_adapt_%d.c", (int)getpid());
-        snprintf(apath, sizeof(apath), "/tmp/ml_adapt_%d.so", (int)getpid());
+        snprintf(cpath, sizeof(cpath), "%s%cml_adapt_%ld.c", tmp_dir, ML_PATH_SEP, ml_getpid());
+        snprintf(apath, sizeof(apath), "%s%cml_adapt_%ld.so", tmp_dir, ML_PATH_SEP, ml_getpid());
         FILE *f = fopen(cpath, "w");
         if (!f) { fprintf(stderr, "Cannot write %s\n", cpath); exit(1); }
-        /* The VM's Value (minilang.h) is {enum type; union{int64,char*,Array}} =
-         * 32 bytes, while extension values (minilang_runtime.h) are
-         * {int64 tag; int64 payload} = 16 bytes. The adapter converts between
-         * the two layouts, otherwise the mixed ABI corrupts the call. */
-        fprintf(f, "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
         /* The VM's Value (minilang.h) is {enum type; union{int64,char*,Array}} =
          * 32 bytes, while extension values (minilang_runtime.h) are
          * {int64 tag; int64 payload} = 16 bytes. The adapter converts between
@@ -559,19 +714,85 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
     free(decls);
     free(handles);
 #else /* _WIN32 */
+    /* Windows: build ONE self-contained DLL from every .c extension plus the
+     * generated adapter plus runtime.c, then register its dllexport'ed
+     * adapter entry points. Bundling runtime.c means the extension DLL does
+     * not depend on symbols exported by the host executable (Windows has no
+     * --export-dynamic equivalent for an exe). */
+    int has_c = 0;
+    for (int e = 0; e < ext_count; e++) {
+        size_t el = strlen(exts[e]);
+        if (el > 2 && strcmp(exts[e] + el - 2, ".c") == 0) has_c = 1;
+    }
+    if (has_c) {
+        char tmp_dir[1024];
+        ml_tmp_dir(tmp_dir, sizeof(tmp_dir));
+        char dllpath[1024], cpath[1024];
+        snprintf(dllpath, sizeof(dllpath), "%s%cml_ext_%ld.dll", tmp_dir, ML_PATH_SEP, ml_getpid());
+        snprintf(cpath, sizeof(cpath), "%s%cml_adapt_%ld.c", tmp_dir, ML_PATH_SEP, ml_getpid());
+
+        int *vm_style = calloc((size_t)nd, sizeof(int));
+        if (!vm_style) { fprintf(stderr, "out of memory\n"); exit(1); }
+        for (int i = 0; i < nd; i++) {
+            char sym[512];
+            snprintf(sym, sizeof(sym), "ml_vm_native_%s", decls[i].name);
+            for (int e = 0; e < ext_count; e++) {
+                size_t el = strlen(exts[e]);
+                if (!(el > 2 && strcmp(exts[e] + el - 2, ".c") == 0)) continue;
+                if (src_mentions(exts[e], sym)) { vm_style[i] = 1; break; }
+            }
+        }
+        write_adapter_source_win(cpath, decls, nd, vm_style);
+
+        char rtc_dir[1200];
+        get_runtime_dir(rtc_dir, sizeof(rtc_dir));
+        const char *linker = getenv("LLVM_LINKER");
+        if (!linker || !linker[0]) linker = "clang";
+        char linkbin[512];
+        if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
+        else llvm_tool(linker, linkbin, sizeof(linkbin));
+
+        char cmd_buf[8192];
+        size_t w = (size_t)snprintf(cmd_buf, sizeof(cmd_buf),
+                                    "\"%s\" -O2 -shared -I\"%s\" \"%s\"",
+                                    linkbin, rtc_dir, cpath);
+        for (int e = 0; e < ext_count && w < sizeof(cmd_buf); e++) {
+            size_t el = strlen(exts[e]);
+            if (!(el > 2 && strcmp(exts[e] + el - 2, ".c") == 0)) continue;
+            w += (size_t)snprintf(cmd_buf + w, sizeof(cmd_buf) - w, " \"%s\"", exts[e]);
+        }
+        if (w < sizeof(cmd_buf)) {
+            w += (size_t)snprintf(cmd_buf + w, sizeof(cmd_buf) - w,
+                                  " \"%s/runtime.c\" -o \"%s\"", rtc_dir, dllpath);
+        }
+        if (w >= sizeof(cmd_buf)) { fprintf(stderr, "command line too long\n"); exit(1); }
+        fprintf(stderr, "  $ %s\n", cmd_buf);
+        if (system(cmd_buf) != 0) {
+            fprintf(stderr, "Failed to build extension DLL (set LLVM_LINKER or install clang)\n");
+            exit(1);
+        }
+        HMODULE h = LoadLibraryA(dllpath);
+        if (!h) {
+            fprintf(stderr, "Cannot load extension DLL %s (error %lu)\n", dllpath, GetLastError());
+            exit(1);
+        }
+        for (int i = 0; i < nd; i++) {
+            char sym[512];
+            snprintf(sym, sizeof(sym), "ml_vm_adapter_%s", decls[i].name);
+            FARPROC f = GetProcAddress(h, sym);
+            if (!f) { fprintf(stderr, "extension DLL lacks %s\n", sym); exit(1); }
+            ml_native_register(decls[i].name, (NativeFn)(void *)f);
+            decls[i].solved = 1;
+        }
+        free(vm_style);
+    }
+    /* Prebuilt .dll extensions: load each and take its VM-style exports. */
     for (int e = 0; e < ext_count; e++) {
         const char *ext = exts[e];
         size_t el = strlen(ext);
-        if (el > 2 && strcmp(ext + el - 2, ".c") == 0) {
-            fprintf(stderr,
-                    "run -e with a .c source is not supported on Windows; "
-                    "pre-compile the extension as a DLL exporting "
-                    "ml_vm_native_<name>(void*, Value*, int), or use "
-                    "`build -e prog.mil ext.c` which links statically.\n");
-            exit(1);
-        }
+        if (el > 2 && strcmp(ext + el - 2, ".c") == 0) continue;
         HMODULE h = LoadLibraryA(ext);
-        if (!h) { fprintf(stderr, "Cannot load extension %s\n", ext); exit(1); }
+        if (!h) { fprintf(stderr, "Cannot load extension %s (error %lu)\n", ext, GetLastError()); exit(1); }
         for (int i = 0; i < nd; i++) {
             if (decls[i].solved) continue;
             char sym[512];
@@ -582,16 +803,10 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
                 decls[i].solved = 1;
             }
         }
-        if (!decls[0].solved) {
-            /* at least one unresolved: report the first missing name */
-            for (int i = 0; i < nd; i++) {
-                if (!decls[i].solved) {
-                    fprintf(stderr,
-                            "Extension %s lacks ml_vm_native_%s (VM-style)\n",
-                            ext, decls[i].name);
-                    break;
-                }
-            }
+    }
+    for (int i = 0; i < nd; i++) {
+        if (!decls[i].solved) {
+            fprintf(stderr, "Some declared natives could not be resolved (first: %s)\n", decls[i].name);
             exit(1);
         }
     }
@@ -841,6 +1056,37 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
     char linkbin[512];
     if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
     else llvm_tool(linker, linkbin, sizeof(linkbin));
+#ifdef _WIN32
+    /* Names of the native entry points the generated IR calls. Needed by the
+     * Windows dynamic path so each extension DLL exports exactly the symbols
+     * its own source defines (an /export for an undefined symbol is fatal). */
+    char native_names[64][128];
+    int native_count = 0;
+    if (dynamic) {
+        char *irsrc = read_file(llpath);
+        const char *q = irsrc;
+        while ((q = strstr(q, "ml_native_")) != NULL && native_count < 64) {
+            q += strlen("ml_native_");
+            size_t len = 0;
+            while (q[len] && len < 127 &&
+                   (isalnum((unsigned char)q[len]) || q[len] == '_')) len++;
+            if (len > 0) {
+                int dup = 0;
+                for (int k = 0; k < native_count; k++) {
+                    if (strlen(native_names[k]) == len &&
+                        strncmp(native_names[k], q, len) == 0) { dup = 1; break; }
+                }
+                if (!dup) {
+                    memcpy(native_names[native_count], q, len);
+                    native_names[native_count][len] = '\0';
+                    native_count++;
+                }
+            }
+            q += len;
+        }
+        free(irsrc);
+    }
+#endif
     {
         char *p = cmd_buf;
         size_t rem = sizeof(cmd_buf);
@@ -865,6 +1111,50 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
             int is_c = sl > 2 && strcmp(src + sl - 2, ".c") == 0;
             if (dynamic && is_c) {
                 char sopath[1100];
+#ifdef _WIN32
+                /* Windows: each .c becomes <base>_extN.dll plus an import
+                 * library the executable links against. The DLL carries its
+                 * own runtime.c copy, so it needs no symbols from the host.
+                 * Only the entry points this source actually defines are
+                 * exported (an /export for an undefined symbol is an error). */
+                char libpath[1100], flags[2048];
+                snprintf(sopath, sizeof(sopath), "%s_ext%d.dll", base, i);
+                snprintf(libpath, sizeof(libpath), "%s_ext%d.lib", base, i);
+                flags[0] = '\0';
+                for (int k = 0; k < native_count; k++) {
+                    char sym[160];
+                    snprintf(sym, sizeof(sym), "ml_native_%s", native_names[k]);
+                    if (!src_mentions(src, sym)) continue;
+                    size_t fl = strlen(flags);
+                    snprintf(flags + fl, sizeof(flags) - fl, " -Wl,/export:%s", sym);
+                }
+                char cmd2[4096];
+                snprintf(cmd2, sizeof(cmd2),
+                         "\"%s\" -O2 -shared -I\"%s\" \"%s\" \"%s/runtime.c\" -o \"%s\" -Wl,/implib:\"%s\"%s",
+                         linkbin, rtc_dir, src, rtc_dir, sopath, libpath, flags);
+                fprintf(stderr, "  $ %s\n", cmd2);
+                int dll_ok = (system(cmd2) == 0);
+                if (!dll_ok) {
+                    /* GNU ld (MinGW) has no /implib or /export: retry with the
+                     * GNU spellings, exporting everything. */
+                    snprintf(cmd2, sizeof(cmd2),
+                             "\"%s\" -O2 -shared -I\"%s\" \"%s\" \"%s/runtime.c\" -o \"%s\" -Wl,--out-implib,\"%s\" -Wl,--export-all-symbols",
+                             linkbin, rtc_dir, src, rtc_dir, sopath, libpath);
+                    fprintf(stderr, "  $ %s\n", cmd2);
+                    dll_ok = (system(cmd2) == 0);
+                }
+                if (!dll_ok) {
+                    /* Never leave a half-built executable behind: fall back to
+                     * the (always working) static link for this extension. */
+                    fprintf(stderr,
+                            "Warning: could not build a shared extension %s on this "
+                            "linker; linking it statically instead\n", src);
+                    snprintf(ext_arg, sizeof(ext_arg), "\"%s\"", src);
+                } else {
+                    /* Link the import library, not the DLL itself. */
+                    snprintf(ext_arg, sizeof(ext_arg), "\"%s\"", libpath);
+                }
+#else
                 snprintf(sopath, sizeof(sopath), "%s_ext%d.so", base, i);
                 char cmd2[3072];
                 snprintf(cmd2, sizeof(cmd2), "%s -O2 -fPIC -shared -I%s %s -o %s",
@@ -875,6 +1165,7 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
                     exit(1);
                 }
                 snprintf(ext_arg, sizeof(ext_arg), "%s -Wl,-rpath,'$ORIGIN'", sopath);
+#endif
             } else {
                 snprintf(ext_arg, sizeof(ext_arg), "%s", src);
             }

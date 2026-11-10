@@ -4,8 +4,9 @@ project(minilang C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Boot compiler sources (runtime.c is NOT here — it's only linked into
-# user-built native executables, not into the boot binary itself).
+# Boot compiler sources. runtime.c *is* linked in: `run -e` dlopen's user
+# extensions that call ml_* helpers, and the executable must provide those
+# symbols (on Windows there is no --export-dynamic equivalent).
 set(SOURCES
     value.c
     lexer.c
@@ -15,6 +16,7 @@ set(SOURCES
     llvm_gen.c
     milc_io.c
     native.c
+    runtime.c
     main.c
 )
 

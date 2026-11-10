@@ -1,4 +1,7 @@
 /* LLVM backend runtime for minilang */
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS  /* strdup/fopen: MSVC deprecation noise */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
