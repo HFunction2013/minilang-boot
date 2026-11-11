@@ -34,7 +34,7 @@
 #define ML_PATH_SEP '/'
 #define ML_PATH_LIST_SEP ':'
 #define ML_SHLIB_EXT "dylib"
-#define ML_SHARED_FLAG "-dynamiclib"
+#define ML_SHARED_FLAG "-dynamiclib -undefined dynamic_lookup"
 #else
 #define ML_PATH_SEP '/'
 #define ML_PATH_LIST_SEP ':'
