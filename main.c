@@ -30,10 +30,16 @@
 #define ML_PATH_SEP '\\'
 #define ML_PATH_LIST_SEP ';'
 #define ML_SHLIB_EXT "dll"
+#elif defined(__APPLE__)
+#define ML_PATH_SEP '/'
+#define ML_PATH_LIST_SEP ':'
+#define ML_SHLIB_EXT "dylib"
+#define ML_SHARED_FLAG "-dynamiclib"
 #else
 #define ML_PATH_SEP '/'
 #define ML_PATH_LIST_SEP ':'
 #define ML_SHLIB_EXT "so"
+#define ML_SHARED_FLAG "-shared"
 #endif
 
 /* Scratch directory (no trailing separator) for transient extension artefacts:
@@ -569,8 +575,8 @@ static void load_extensions_core(ExtDecl *decls, int nd, char **exts, int ext_co
             if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
             else llvm_tool(linker, linkbin, sizeof(linkbin));
             snprintf(cmd_buf, sizeof(cmd_buf),
-                     "%s -O2 -fPIC -shared -I%s %s -o %s",
-                     linkbin, rtc_dir, ext, libpath);
+                     "%s -O2 -fPIC %s -I%s %s -o %s",
+                     linkbin, ML_SHARED_FLAG, rtc_dir, ext, libpath);
             fprintf(stderr, "  $ %s\n", cmd_buf);
             int ret = system(cmd_buf);
             if (ret != 0) {
@@ -674,8 +680,8 @@ static void load_extensions_core(ExtDecl *decls, int nd, char **exts, int ext_co
         if (strchr(linker, '/') || strchr(linker, '\\')) snprintf(linkbin, sizeof(linkbin), "%s", linker);
         else llvm_tool(linker, linkbin, sizeof(linkbin));
         char cmd_buf[3072];
-        snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -fPIC -shared -I%s %s -o %s",
-                 linkbin, rtc_dir, cpath, apath);
+        snprintf(cmd_buf, sizeof(cmd_buf), "%s -O2 -fPIC %s -I%s %s -o %s",
+                 linkbin, ML_SHARED_FLAG, rtc_dir, cpath, apath);
         fprintf(stderr, "  $ %s\n", cmd_buf);
         int ret = system(cmd_buf);
         if (ret != 0) { fprintf(stderr, "Failed to build native adapter\n"); exit(1); }
@@ -1186,8 +1192,8 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
 #else
                 snprintf(sopath, sizeof(sopath), "%s_ext%d.so", base, i);
                 char cmd2[3072];
-                snprintf(cmd2, sizeof(cmd2), "%s -O2 -fPIC -shared -I%s %s -o %s",
-                         linkbin, rtc_dir, src, sopath);
+                snprintf(cmd2, sizeof(cmd2), "%s -O2 -fPIC %s -I%s %s -o %s",
+                         linkbin, ML_SHARED_FLAG, rtc_dir, src, sopath);
                 fprintf(stderr, "  $ %s\n", cmd2);
                 if (system(cmd2) != 0) {
                     fprintf(stderr, "Failed to compile shared extension %s\n", src);
