@@ -101,10 +101,10 @@ typedef enum {
     TOK_LPAREN, TOK_RPAREN, TOK_LBRACE, TOK_RBRACE,
     TOK_LBRACKET, TOK_RBRACKET,
     TOK_COMMA, TOK_SEMICOLON,
-} TokenType;
+} MlTokenType;
 
 typedef struct {
-    TokenType type;
+    MlTokenType type;
     char *text;      // for ident/string: owned copy
     int64_t intval;  // for int literal
     int line;
@@ -161,7 +161,7 @@ struct Node {
         struct { char *name; Node *value; } var_decl;
         struct { char *name; Node *value; } assign;
         struct { Node *target; Node *index; Node *value; } index_assign;
-        struct { Node *left; Node *right; int op; } binary; // op is TokenType
+        struct { Node *left; Node *right; int op; } binary; // op is MlTokenType
         struct { Node *operand; int op; } unary;
         struct { Node *cond; Node *then_branch; Node *else_branch; } if_stmt;
         struct { Node *cond; Node *body; } while_stmt;

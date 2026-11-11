@@ -20,7 +20,7 @@ void lexer_free(Lexer *l) {
     free(l);
 }
 
-static void add_token(Lexer *l, TokenType type, const char *text, int64_t intval) {
+static void add_token(Lexer *l, MlTokenType type, const char *text, int64_t intval) {
     if (l->count >= l->cap) {
         l->cap = l->cap ? l->cap * 2 : 64;
         l->tokens = realloc(l->tokens, sizeof(Token) * l->cap);
@@ -64,7 +64,7 @@ static void skip_whitespace_and_comments(Lexer *l) {
     }
 }
 
-static TokenType keyword_or_ident(const char *word) {
+static MlTokenType keyword_or_ident(const char *word) {
     if (strcmp(word, "var") == 0) return TOK_VAR;
     if (strcmp(word, "func") == 0) return TOK_FUNC;
     if (strcmp(word, "if") == 0) return TOK_IF;
@@ -142,7 +142,7 @@ void lex(Lexer *l) {
             char *buf = malloc(nlen + 1);
             memcpy(buf, l->src + start, nlen);
             buf[nlen] = '\0';
-            TokenType tt = keyword_or_ident(buf);
+            MlTokenType tt = keyword_or_ident(buf);
             add_token(l, tt, buf, 0);
             free(buf);
             continue;

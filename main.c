@@ -8,12 +8,11 @@
 #include <direct.h>
 #include <io.h>
 #include <process.h>
+#include <sys/stat.h>
 #if defined(_MSC_VER)
 /* minilang.h already maps strdup/getcwd/access/realpath for MSVC. */
 #define stat _stat
 #define S_ISDIR(m) ((m) & _S_IFDIR)
-#else
-#include <sys/stat.h>
 #endif
 #define ml_getpid() ((long)_getpid())
 #else

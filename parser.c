@@ -78,8 +78,8 @@ void parser_free(Parser *p) {
 static Token *cur(Parser *p) { return &p->lexer->tokens[p->pos]; }
 static Token *peek_tok(Parser *p, int o) { return &p->lexer->tokens[p->pos + o]; }
 static Token *advance_p(Parser *p) { return &p->lexer->tokens[p->pos++]; }
-static int check(Parser *p, TokenType t) { return cur(p)->type == t; }
-static Token *expect(Parser *p, TokenType t, const char *msg) {
+static int check(Parser *p, MlTokenType t) { return cur(p)->type == t; }
+static Token *expect(Parser *p, MlTokenType t, const char *msg) {
     if (!check(p, t)) {
         fprintf(stderr, "Parse error line %d: expected %s, got type %d", cur(p)->line, msg, cur(p)->type);
         if (cur(p)->text) fprintf(stderr, " ('%s')", cur(p)->text);

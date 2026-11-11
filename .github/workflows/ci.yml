@@ -25,7 +25,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang build-essential
+          sudo apt-get install -y llvm clang build-essential make
 
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
@@ -40,15 +40,18 @@ jobs:
         shell: bash
         run: cmake -B build && cmake --build build --config Release
 
+      - name: Add boot binary to PATH (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "${{ github.workspace }}/minilang-boot" >> $GITHUB_PATH
+
       - name: Run every tests/*.mil through the boot VM (Unix)
         if: runner.os != 'Windows'
         shell: bash
         env:
           MINILANG_DIR: ${{ github.workspace }}/minilang-compiler
-          PATH: ${{ github.workspace }}:${{ env.PATH }}
         run: |
           set -e
-          make test
           for f in minilang-compiler/tests/*.mil; do
             echo "--- $f ---"
             ./minilang run "$f"
