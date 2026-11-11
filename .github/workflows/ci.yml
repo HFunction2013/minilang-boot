@@ -20,6 +20,7 @@ jobs:
         with:
           repository: HFunction2013/minilang-compiler
           path: minilang-compiler
+          submodules: true
 
       - name: Install LLVM + build tools (Ubuntu)
         if: runner.os == 'Linux'
