@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout boot
+        uses: actions/checkout@v4
+
+      - name: Checkout compiler (test programs + syslib)
+        uses: actions/checkout@v4
+        with:
+          repository: HFunction2013/minilang-compiler
+          path: minilang-compiler
+
+      - name: Install LLVM + build tools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang build-essential
+
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llvm
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: make
+
+      - name: Build (Windows, MSVC)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cmake -B build && cmake --build build --config Release
+
+      - name: Run every tests/*.mil through the boot VM (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MINILANG_DIR: ${{ github.workspace }}/minilang-compiler
+          PATH: ${{ github.workspace }}:${{ env.PATH }}
+        run: |
+          set -e
+          make test
+          for f in minilang-compiler/tests/*.mil; do
+            echo "--- $f ---"
+            ./minilang run "$f"
+          done
+
+      - name: VM smoke over tests/*.mil (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          MINILANG_DIR: ${{ github.workspace }}/minilang-compiler
+        run: |
+          set -e
+          BIN=build/Release/minilang.exe
+          for f in minilang-compiler/tests/*.mil; do
+            echo "--- $f ---"
+            "$BIN" run "$f"
+          done
