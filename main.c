@@ -1049,7 +1049,10 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
     if (access(rtc, 0) != 0) {
         snprintf(rtc, sizeof(rtc), "%s/../minilang-boot/runtime.c", exe_dir);
         if (access(rtc, 0) != 0) {
-            snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+            snprintf(rtc, sizeof(rtc), "%s/minilang-boot/runtime.c", exe_dir);
+            if (access(rtc, 0) != 0) {
+                snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+            }
         }
     }
     /* Directory of runtime.c — exposed via -I so user extension C files can
