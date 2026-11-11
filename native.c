@@ -142,6 +142,77 @@ static Value n_system(VM *vm, Value *args, int argc) {
     return make_int(system(args[0].as.string));
 }
 
+/* native_invoke(name, boxed_args) -> mil-boxed result.
+ *
+ * Generic dispatch used by the self-hosted VM (vm.mil): when it hits
+ * OP_NATIVE for a name it does not hard-code, it forwards the call here.
+ * boxed_args is a mil array of mil values, each boxed as [type_tag, payload];
+ * we unwrap them into host Values, look the name up in the registry (so
+ * extensions loaded through `run -e` are reachable) and wrap the result back. */
+static Value n_native_invoke(VM *vm, Value *args, int argc) {
+    (void)argc;
+    const char *name = args[0].as.string;
+    Array *boxes = &args[1].as.array;
+    NativeFn fn = ml_native_lookup(name);
+    if (!fn) {
+        fprintf(stderr, "VM error: native function '%s' is not registered\n", name);
+        exit(1);
+    }
+    Value unpacked[256];
+    int n = boxes->count < 256 ? boxes->count : 256;
+    for (int i = 0; i < n; i++) {
+        Value *box = &boxes->items[i];
+        if (box->type != VAL_ARRAY || box->as.array.count < 2) {
+            unpacked[i] = *box;
+            continue;
+        }
+        int64_t tag = box->as.array.items[0].as.integer;
+        if (tag == VAL_NIL) unpacked[i] = make_nil();
+        else if (tag == VAL_OPAQUE) {
+            /* mil boxed opaque payload is an int holding the pointer */
+            Value o = make_int(box->as.array.items[1].as.integer);
+            o.type = VAL_OPAQUE;
+            unpacked[i] = o;
+        } else unpacked[i] = box->as.array.items[1];
+    }
+    Value r = fn(vm, unpacked, n);
+    /* Re-box as [type_tag, payload], matching v_int/v_str/v_nil/v_arr. Opaque
+     * results are boxed with an int payload so the mil VM can test truthiness
+     * and compare identity. */
+    Value cells[2];
+    cells[0] = make_int((int64_t)r.type);
+    if (r.type == VAL_NIL) cells[1] = make_int(0);
+    else if (r.type == VAL_OPAQUE) cells[1] = make_int(r.as.integer);
+    else cells[1] = r;
+    return make_array(cells, 2);
+}
+
+/* ext_build_load(ext_paths, names, params) -> int.
+ *
+ * Compile + dlopen user C extensions on behalf of the self-hosted VM
+ * (main.mil run -e). args[0] = string array of .c/.so paths,
+ * args[1] = string array of declared native names,
+ * args[2] = int array of parameter counts. */
+static Value n_ext_build_load(VM *vm, Value *args, int argc) {
+    (void)vm; (void)argc;
+    Array *exts = &args[0].as.array;
+    Array *names = &args[1].as.array;
+    Array *params = &args[2].as.array;
+    const char **ep = malloc(sizeof(char *) * (size_t)(exts->count > 0 ? exts->count : 1));
+    const char **np = malloc(sizeof(char *) * (size_t)(names->count > 0 ? names->count : 1));
+    int *pp = malloc(sizeof(int) * (size_t)(names->count > 0 ? names->count : 1));
+    for (int i = 0; i < exts->count; i++) ep[i] = exts->items[i].as.string;
+    for (int i = 0; i < names->count; i++) {
+        np[i] = names->items[i].as.string;
+        pp[i] = (int)params->items[i].as.integer;
+    }
+    int rc = ml_ext_build_and_load(ep, exts->count, np, pp, names->count);
+    free(ep);
+    free(np);
+    free(pp);
+    return make_int(rc);
+}
+
 void ml_native_register_builtins(void) {
     ml_native_register("sqrt", n_sqrt);
     ml_native_register("abs", n_abs);
@@ -151,4 +222,6 @@ void ml_native_register_builtins(void) {
     ml_native_register("cwrite", n_cwrite);
     ml_native_register("exit", n_exit);
     ml_native_register("csystem", n_system);
+    ml_native_register("native_invoke", n_native_invoke);
+    ml_native_register("ext_build_load", n_ext_build_load);
 }

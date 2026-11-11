@@ -335,6 +335,13 @@ NativeFn ml_native_lookup(const char *name);
 /* Ensure the built-in native method table (syslib natives) is registered. */
 void ml_native_register_builtins(void);
 
+/* Build + dlopen user C extensions for the self-hosted VM. ext_paths/nextc are
+ * the .c (or .so) sources; names/params/nd describe the program's
+ * `native func` declarations (bare names, parameter counts). Returns 0 on
+ * success (exits on compile/link failure, like the C front-end). */
+int ml_ext_build_and_load(const char **ext_paths, int nextc,
+                          const char **names, const int *params, int nd);
+
 /* ===================== LLVM IR Gen ===================== */
 char *generate_llvm_ir(Parser *p);
 

@@ -543,26 +543,7 @@ static void write_adapter_source_win(const char *cpath, ExtDecl *decls, int nd,
 }
 #endif
 
-static void load_native_extensions(Program *prog, char **exts, int ext_count) {
-    if (ext_count == 0) return;
-    ExtDecl *decls = NULL;
-    int nd = 0;
-    for (int i = 0; i < prog->func_count; i++) {
-        FuncInfo *fn = &prog->funcs[i];
-        if (!fn->is_native) continue;
-        decls = realloc(decls, (size_t)(nd + 1) * sizeof(ExtDecl));
-        if (!decls) { fprintf(stderr, "out of memory\n"); exit(1); }
-        decls[nd].name = fn->name;
-        decls[nd].params = fn->param_count;
-        decls[nd].solved = 0;
-        nd++;
-    }
-    if (nd == 0) {
-        /* No `native func` declarations in this program: nothing to register.
-         * (The old Windows branch dereferenced decls[0] unconditionally.) */
-        free(decls);
-        return;
-    }
+static void load_extensions_core(ExtDecl *decls, int nd, char **exts, int ext_count) {
 #ifndef _WIN32
     /* Pass 1: compile + dlopen each extension, resolve vm-style symbols. */
     char tmp_dir[1024];
@@ -711,7 +692,6 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
     int all_solved = 1;
     for (int i = 0; i < nd; i++) if (!decls[i].solved) all_solved = 0;
     if (!all_solved) { fprintf(stderr, "Some declared natives could not be resolved\n"); exit(1); }
-    free(decls);
     free(handles);
 #else /* _WIN32 */
     /* Windows: build ONE self-contained DLL from every .c extension plus the
@@ -812,6 +792,50 @@ static void load_native_extensions(Program *prog, char **exts, int ext_count) {
     }
     free(decls);
 #endif
+}
+
+/* Build the ExtDecl table from the program's native declarations and load. */
+static void load_native_extensions(Program *prog, char **exts, int ext_count) {
+    if (ext_count == 0) return;
+    ExtDecl *decls = NULL;
+    int nd = 0;
+    for (int i = 0; i < prog->func_count; i++) {
+        FuncInfo *fn = &prog->funcs[i];
+        if (!fn->is_native) continue;
+        decls = realloc(decls, (size_t)(nd + 1) * sizeof(ExtDecl));
+        if (!decls) { fprintf(stderr, "out of memory\n"); exit(1); }
+        decls[nd].name = fn->name;
+        decls[nd].params = fn->param_count;
+        decls[nd].solved = 0;
+        nd++;
+    }
+    if (nd == 0) {
+        /* No `native func` declarations in this program: nothing to register.
+         * (The old Windows branch dereferenced decls[0] unconditionally.) */
+        free(decls);
+        return;
+    }
+    load_extensions_core(decls, nd, exts, ext_count);
+    free(decls);
+}
+
+/* Entry point for the self-hosted VM (`main.mil run -e prog.mil ext.c ...`):
+ * the mil side has already parsed the program's `native func` declarations, so
+ * the ExtDecl table is built from names/params instead of the boot Program. */
+int ml_ext_build_and_load(const char **ext_paths, int nextc,
+                          const char **names, const int *params, int nd) {
+    ExtDecl *decls = calloc((size_t)(nd > 0 ? nd : 1), sizeof(ExtDecl));
+    char **exts = calloc((size_t)(nextc > 0 ? nextc : 1), sizeof(char *));
+    for (int i = 0; i < nd; i++) {
+        decls[i].name = names[i];
+        decls[i].params = params[i];
+        decls[i].solved = 0;
+    }
+    for (int i = 0; i < nextc; i++) exts[i] = (char *)ext_paths[i];
+    load_extensions_core(decls, nd, exts, nextc);
+    free(decls);
+    free(exts);
+    return 0;
 }
 
 /* run with user C extensions: compile -> register natives from the loaded

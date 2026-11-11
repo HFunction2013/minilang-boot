@@ -506,3 +506,22 @@ Value ml_native_exit(Value code) {
 Value ml_native_csystem(Value cmd) {
     return vint(system(cstr(cmd)));
 }
+
+/* ===================== Self-hosted VM bridge natives =====================
+ * native_invoke / ext_build_load are implemented for the interpreted toolchain
+ * (native.c in the boot binary, where the C registry and dlopen exist). A
+ * natively-built toolchain has no registry, so these are stubs: `run -e`
+ * extension loading is supported by the boot VM, not by a compiled toolchain. */
+Value ml_native_native_invoke(Value name, Value args) {
+    (void)name; (void)args;
+    fputs("native_invoke: not available in a natively built toolchain "
+          "(use the boot minilang binary)\n", stderr);
+    return vnil();
+}
+
+Value ml_native_ext_build_load(Value exts, Value names, Value params) {
+    (void)exts; (void)names; (void)params;
+    fputs("ext_build_load: not available in a natively built toolchain "
+          "(use the boot minilang binary)\n", stderr);
+    return vint(1);
+}
