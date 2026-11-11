@@ -446,7 +446,10 @@ static void get_runtime_dir(char *rtc_dir, size_t sz) {
     snprintf(rtc, sizeof(rtc), "%s/runtime.c", exe_dir);
     if (access(rtc, 0) != 0) {
         snprintf(rtc, sizeof(rtc), "%s/../minilang-boot/runtime.c", exe_dir);
-        if (access(rtc, 0) != 0) snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+        if (access(rtc, 0) != 0) {
+            snprintf(rtc, sizeof(rtc), "%s/minilang-boot/runtime.c", exe_dir);
+            if (access(rtc, 0) != 0) snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+        }
     }
     snprintf(rtc_dir, sz, "%s", rtc);
     char *slash = strrchr(rtc_dir, '/');
