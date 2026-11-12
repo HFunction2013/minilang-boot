@@ -2,13 +2,15 @@
  *
  * Link your extension into a native executable with:
  *
- *     ./minilang build -e prog.mil myext.c
- *     (or: ./main build -e prog.mil myext.c)
+ *     ./minilang build -e prog.mil myext.o      # precompiled object/archive
+ *     ./minilang build -e prog.mil myext.so     # precompiled shared library
  *
- * or load it at run time (C bootstrap VM only):
+ * or load a prebuilt shared library at run time (C bootstrap VM only):
  *
- *     ./minilang run prog.mil myext.c       # .c is compiled to a shared lib
- *     ./minilang run prog.mil myext.so      # pre-built shared lib
+ *     ./minilang run prog.mil myext.so
+ *
+ * The toolchain never compiles extension C itself: precompile it yourself
+ * into an object, archive or shared library first.
  *
  * Your extension declares minilang functions with:
  *
@@ -83,12 +85,32 @@ void ml_print(Value v, int32_t newline);
 Value ml_system(Value cmd);      /* shell command -> exit code */
 Value ml_readline(void);         /* one line from stdin */
 
+/* ---- Additional runtime helpers used by the generated C backend -------- */
+int ml_is_truthy(Value v);
+Value ml_array_make(Value sizev, Value init);
+Value ml_argc(void);
+Value ml_argv(Value idxv);
+Value ml_readfile(Value pathv);
+Value ml_fileexists(Value pathv);
+Value ml_writefile(Value pathv, Value contentv);
+Value ml_readfilebytes(Value pathv);
+Value ml_writefilebytes(Value pathv, Value arrv);
+Value ml_chr(Value nv);
+void ml_set_args(int argc, char **argv);
+Value ml_len(Value v);
+Value ml_charat(Value s, Value idx);
+Value ml_substr(Value s, Value start, Value len);
+Value ml_tostring(Value v);
+Value ml_toint(Value v);
+Value ml_strcmp(Value a, Value b);
+Value ml_readall(void);
+
 /* ---- Native registry (C bootstrap VM) -----------------------------------
- * The VM looks natives up by base name via ml_native_lookup. When a shared
- * library (or an extension compiled at run time) is loaded, each declared
- * `native func name(...)` is resolved as `ml_native_<name>` in the library
- * and registered here. Not required for build -e linking (the LLVM backend
- * references @ml_native_<name> symbols directly). */
+ * The VM looks natives up by base name via ml_native_lookup. When a prebuilt
+ * shared library is loaded, each declared `native func name(...)` is resolved
+ * as `ml_native_<name>` in the library and registered here. Not required for
+ * build -e linking (the C backend references ml_native_<name> symbols
+ * directly). */
 typedef Value (*NativeFn)(void *vm, Value *args, int argc);
 void ml_native_register(const char *name, NativeFn fn);
 

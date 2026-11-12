@@ -330,6 +330,9 @@ typedef Value (*NativeFn)(VM *vm, Value *args, int argc);
 
 /* Register a C native method under `name`. Overwrites any previous entry. */
 void ml_native_register(const char *name, NativeFn fn);
+/* Register a packed-ABI entry point (dlsym'd from a prebuilt shared library),
+ * wrapped in a prebuilt arity trampoline for the interpreted VM. */
+void ml_native_register_packed(const char *name, void *fn, int arity);
 /* Look up a native method by name; returns NULL if not registered. */
 NativeFn ml_native_lookup(const char *name);
 /* Ensure the built-in native method table (syslib natives) is registered. */
@@ -342,8 +345,8 @@ void ml_native_register_builtins(void);
 int ml_ext_build_and_load(const char **ext_paths, int nextc,
                           const char **names, const int *params, int nd);
 
-/* ===================== LLVM IR Gen ===================== */
-char *generate_llvm_ir(Parser *p);
+/* ===================== C source Gen ===================== */
+char *generate_c_source(Parser *p);
 
 /* ===================== Utility ===================== */
 char *read_file(const char *path);

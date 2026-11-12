@@ -67,6 +67,97 @@ NativeFn ml_native_lookup(const char *name) {
     return NULL;
 }
 
+/* ===================== Packed-ABI extension bridge =====================
+ *
+ * A prebuilt shared library may export per-argument packed-ABI entry points
+ * `ml_native_<name>(Value ...)` using the 16-byte packed Value model from
+ * minilang_runtime.h. The interpreted VM internally uses the 32-byte host
+ * Value model. The minilang executable itself ships this static trampoline
+ * table, so such a library can be loaded at run time WITHOUT compiling any
+ * extension C on the fly: each registered packed entry gets a prebuilt
+ * per-arity trampoline that converts arguments host->packed, calls the entry,
+ * and converts the result packed->host.
+ *
+ * Arrays are passed by reference across the two models only on a best-effort
+ * basis; the supported argument/result types are nil, int, string and opaque.
+ */
+typedef struct { int64_t tag; int64_t payload; } PVal;
+
+static PVal vm_to_packed(Value v) {
+    PVal o = {0, 0};
+    switch (v.type) {
+        case VAL_NIL: break;
+        case VAL_INT:    o.tag = 1; o.payload = v.as.integer; break;
+        case VAL_STRING: o.tag = 2; o.payload = (int64_t)v.as.string; break;
+        case VAL_OPAQUE: o.tag = 4; o.payload = v.as.integer; break;
+        case VAL_ARRAY:  o.tag = 3; o.payload = (int64_t)&v.as.array; break;
+    }
+    return o;
+}
+
+static Value packed_to_vm(PVal p) {
+    switch (p.tag) {
+        case 1: return make_int(p.payload);
+        case 2: return make_string((const char *)p.payload);
+        case 4: { Value o = make_int(p.payload); o.type = VAL_OPAQUE; return o; }
+        default: return make_nil();
+    }
+}
+
+typedef struct { void *fn; int arity; } BridgeSlot;
+#define BRIDGE_CAP 16
+static BridgeSlot g_bridge[BRIDGE_CAP];
+static int g_bridge_count = 0;
+
+static Value bridge_call(const BridgeSlot *s, Value *args, int argc) {
+    PVal pa[BRIDGE_CAP];
+    int n = argc < BRIDGE_CAP ? argc : BRIDGE_CAP;
+    for (int i = 0; i < n; i++) pa[i] = vm_to_packed(args[i]);
+    PVal pr;
+    switch (s->arity) {
+        case 0: pr = ((PVal (*)(void))s->fn)(); break;
+        case 1: pr = ((PVal (*)(PVal))s->fn)(pa[0]); break;
+        case 2: pr = ((PVal (*)(PVal, PVal))s->fn)(pa[0], pa[1]); break;
+        case 3: pr = ((PVal (*)(PVal, PVal, PVal))s->fn)(pa[0], pa[1], pa[2]); break;
+        default:
+            fprintf(stderr, "bridge: packed native arity %d not supported\n", s->arity);
+            return make_nil();
+    }
+    return packed_to_vm(pr);
+}
+
+/* One prebuilt trampoline per bridge slot. */
+#define BRIDGE_TRAMP(K) \
+    static Value bridge_tramp_##K(VM *vm, Value *args, int argc) { \
+        return bridge_call(&g_bridge[K], args, argc); \
+    }
+BRIDGE_TRAMP(0)  BRIDGE_TRAMP(1)  BRIDGE_TRAMP(2)  BRIDGE_TRAMP(3)
+BRIDGE_TRAMP(4)  BRIDGE_TRAMP(5)  BRIDGE_TRAMP(6)  BRIDGE_TRAMP(7)
+BRIDGE_TRAMP(8)  BRIDGE_TRAMP(9)  BRIDGE_TRAMP(10) BRIDGE_TRAMP(11)
+BRIDGE_TRAMP(12) BRIDGE_TRAMP(13) BRIDGE_TRAMP(14) BRIDGE_TRAMP(15)
+#undef BRIDGE_TRAMP
+
+static NativeFn g_bridge_tramp[BRIDGE_CAP] = {
+    bridge_tramp_0,  bridge_tramp_1,  bridge_tramp_2,  bridge_tramp_3,
+    bridge_tramp_4,  bridge_tramp_5,  bridge_tramp_6,  bridge_tramp_7,
+    bridge_tramp_8,  bridge_tramp_9,  bridge_tramp_10, bridge_tramp_11,
+    bridge_tramp_12, bridge_tramp_13, bridge_tramp_14, bridge_tramp_15,
+};
+
+/* Register a packed-ABI entry point (dlsym'd from a prebuilt shared library)
+ * under the VM registry `name`, wrapped in a prebuilt arity trampoline. */
+void ml_native_register_packed(const char *name, void *fn, int arity) {
+    if (g_bridge_count >= BRIDGE_CAP) {
+        fprintf(stderr, "bridge: too many packed natives (max %d)\n", BRIDGE_CAP);
+        return;
+    }
+    int k = g_bridge_count++;
+    g_bridge[k].fn = fn;
+    g_bridge[k].arity = arity;
+    ml_native_register(name, g_bridge_tramp[k]);
+}
+
+
 /* ===================== Built-in native methods ===================== */
 
 /* sqrt(n) -> floor(sqrt(n)) as an int. Moved out of syslib/math.mil so the

@@ -1,4 +1,4 @@
-/* LLVM backend runtime for minilang */
+/* C backend runtime for minilang */
 #if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS  /* strdup/fopen: MSVC deprecation noise */
 #endif
@@ -129,6 +129,9 @@ static int truthy(Value v) {
     return 0;
 }
 
+/* Exported truthiness predicate for the C backend's generated control flow. */
+int ml_is_truthy(Value v) { return truthy(v); }
+
 Value ml_add(Value a, Value b) {
     if (a.tag == TAG_INT && b.tag == TAG_INT) return vint(a.payload + b.payload);
     if (a.tag == TAG_STR || b.tag == TAG_STR) {
@@ -249,7 +252,7 @@ Value ml_readfile(Value pathv) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *buf = malloc(size + 1);
-    fread(buf, 1, size, f);
+    (void)fread(buf, 1, size, f);
     buf[size] = '\0';
     fclose(f);
     Value v = {TAG_STR, (int64_t)(intptr_t)buf};
@@ -440,10 +443,11 @@ Value ml_readall(void) {
 }
 
 /* ===================== Native (C-implemented) functions =====================
- * These mirror native.c but use the LLVM Value calling convention (each arg is
- * a Value, return is a Value) so the compiled native executable can call them
- * directly. The llvm_gen backend redirects calls to `native func` declarations
- * to these @ml_native_* symbols (by base name, matching ml_native_lookup). */
+ * These mirror native.c but use the packed Value calling convention (each arg
+ * is a packed Value, return is a packed Value) so the compiled native
+ * executable can call them directly. The C backend redirects calls to `native
+ * func` declarations to these ml_native_* symbols (by base name, matching
+ * ml_native_lookup). */
 
 /* sqrt(n) -> floor(sqrt(n)) as int (base-2 digit algorithm, same as native.c) */
 Value ml_native_sqrt(Value n) {

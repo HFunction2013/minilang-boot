@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -std=gnu11
-SRCS = value.c lexer.c parser.c bytecode.c vm.c llvm_gen.c milc_io.c native.c runtime.c main.c
+SRCS = value.c lexer.c parser.c bytecode.c vm.c c_gen.c milc_io.c native.c runtime.c main.c
 OBJS = $(SRCS:.c=.o)
 TARGET = minilang
 
@@ -30,7 +30,8 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET) *.ll *.o tests/*.ll tests/*.o tests/*_native
+	rm -f $(OBJS) $(TARGET) *.o tests/*.o tests/*_native
+	rm -f tests/*.c
 
 # The .mil test programs live in the sibling minilang-compiler checkout since
 # the toolchain split (2026-10). Prefer a local tests/ dir when present, then
