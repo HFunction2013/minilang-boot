@@ -94,8 +94,8 @@ static void abs_dirname(const char *path, char *out, size_t outsz) {
 }
 
 /**
- * Directory holding the minilang executable. Needed to find syslib/, runtime.c
- * and ir_compile.py no matter where the user runs from.
+ * Directory holding the minilang executable. Needed to find syslib/ and
+ * runtime.c no matter where the user runs from.
  *
  * /proc/self/exe exists on Linux only, so fall back to the macOS dynamic-loader
  * API and finally to argv[0] (resolved through PATH when it has no slash).

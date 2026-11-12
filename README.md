@@ -2,8 +2,8 @@
 
 The **handwritten C bootstrap toolchain** for the minilang language. This is the
 small C program that can lex, parse, compile to bytecode, run the stack VM, and
-emit LLVM IR — it is the seed from which the self-hosted minilang compiler
-(`minilang-compiler`) is bootstrapped.
+emit C source for a native build — it is the seed from which the self-hosted
+minilang compiler (`minilang-compiler`) is bootstrapped.
 
 Split out of [`minilang-compiler`](https://github.com/HFunction2013/minilang-compiler).
 
@@ -18,11 +18,10 @@ Split out of [`minilang-compiler`](https://github.com/HFunction2013/minilang-com
 | `vm.c` | stack-based VM + `OP_NATIVE` C-dispatch |
 | `value.c` | value operations (int/string/array arithmetic) |
 | `milc_io.c` | `.milc` binary (magic `!milc`) serializer |
-| `llvm_gen.c` | AST → LLVM IR text |
-| `runtime.c` | C runtime linked into native executables (LLVM backend) |
+| `c_gen.c` | AST → C source (native backend) |
+| `runtime.c` | C runtime linked into native executables (C backend) |
 | `native.c` | registry + built-in **native methods** (`sqrt`, `abs`, `time`, `getenv`, …) |
-| `main.c` | CLI: `run / bytecode / dump-text / llvm / build -b|-e / repl / self-test` |
-| `ir_compile.py` | (legacy) llvmlite-based `.ll`→`.o`; replaced by LLVM project binaries |
+| `main.c` | CLI: `run / bytecode / dump-text / c / build -b|-e / repl / self-test` |
 
 ## Build
 
@@ -51,39 +50,46 @@ pointer. New natives are added in `native.c` — no interpreter changes needed.
 
 ## Linking native executables
 
-`build -e <file>` emits LLVM IR (`.ll`), then uses **LLVM project binaries**
-(`llc` to assemble an object, `clang`/`ld.lld` to link `runtime.c`) instead of
-Python llvmlite. Point `LLVM_DIR` at an LLVM install, or have `llc`/`clang` on
-`PATH`.
+`build -e <file>` emits a C source file (`<base>.c`) and compiles it with the
+system C compiler at `-O2`, linking `runtime.c`:
+
+```
+cc -O2 -I<runtime dir> <base>.c runtime.c [prebuilt extensions] -o <bin>
+```
+
+The compiler driver comes from `$CC` (Unix default `cc`, Windows default
+`clang`); no LLVM/llc/llvmlite step is involved.
 
 ## User C extensions
 
-A `.mil` file can declare a native that a C file supplied on the command line
-implements:
+A `.mil` file can declare a native that a C implementation supplied on the
+command line provides:
 
 ```minilang
 native func scale(x);
 ```
 
-Run it straight from source — the boot VM compiles the `.c`, loads it and
-registers the natives it exports:
+Extensions must be **precompiled yourself** — the toolchain never compiles
+extension `.c` on the fly. Pass a prebuilt shared library to load while
+interpreting:
 
 ```bash
-./minilang run -e prog.mil ext.c -- args
-./minilang run -e prog.mil ext.so -- args   # prebuilt (.dll on Windows)
+./minilang run -e prog.mil ext.so -- args   # .dll on Windows
 ```
 
-Or link it into a native executable (static by default, `--dynamic` for a
-shared extension):
+Or link a precompiled object/archive/shared library into a native executable:
 
 ```bash
-./minilang build -e prog.mil ext.c
-./minilang build -e --dynamic prog.mil ext.c   # extension becomes <base>_extN.so/.dll
+./minilang build -e prog.mil ext.o
 ```
 
-Two signatures are accepted: `Value ml_native_<name>(Value ...)` (per argument,
-the style the LLVM backend emits) and `MLValue ml_vm_native_<name>(void*,
-MLValue*, int)` (VM style). The extension API — `ml_nil`, `ml_is_int`,
+Raw `.c` sources are rejected. `--dynamic` is accepted for compatibility but
+no longer changes the link mode.
+
+Two signatures are accepted: `Value ml_native_<name>(Value ...)` (packed ABI,
+bridged to the VM value) and `MLValue ml_vm_native_<name>(void*, MLValue*, int)`
+(VM style, registered directly). The packed bridge supports arity 0–3; arrays
+cross the ABI best-effort. The extension API — `ml_nil`, `ml_is_int`,
 `ml_mkarray`, `ml_opaque_create`, ... — is documented in `minilang_runtime.h`.
 
 ## Windows
@@ -91,13 +97,9 @@ MLValue*, int)` (VM style). The extension API — `ml_nil`, `ml_is_int`,
 MSVC and MinGW are both supported (everything branches on `_WIN32`; MSVC builds
 through CMake: `cmake -B build && cmake --build build`).
 
-* `run -e` packs the `.c` sources, the generated ABI adapter and `runtime.c` into
-  `%TEMP%\ml_ext_<pid>.dll` and `LoadLibrary`s it. Bundling `runtime.c` keeps the
-  DLL self-contained, since Windows has no `--export-dynamic` equivalent for an
-  executable's symbols.
-* `build -e --dynamic` writes `<base>_extN.dll` plus an import library and links
-  the import library; if the current linker has no import-library support it
-  warns and falls back to static linking, so the executable still runs.
+* Extensions are precompiled to a `.dll` (or `.obj`/static archive) yourself;
+  `run -e` loads the DLL with `LoadLibrary`. The toolchain does not bundle
+  `.c` sources into a temporary process DLL.
 * Executable discovery uses `GetModuleFileNameA`, `PATH` splits on `;`, and
   scratch files go to `%TEMP%` — no `/proc/self/exe`, `/tmp` or `:` separator.
 

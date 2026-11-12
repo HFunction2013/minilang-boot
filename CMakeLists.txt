@@ -13,7 +13,7 @@ set(SOURCES
     parser.c
     bytecode.c
     vm.c
-    llvm_gen.c
+    c_gen.c
     milc_io.c
     native.c
     runtime.c
