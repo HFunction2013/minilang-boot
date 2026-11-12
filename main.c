@@ -897,6 +897,13 @@ static void self_test(const char *self) {
 }
 int main(int argc, char **argv) {
     if (argc > 0 && argv[0]) { snprintf(g_argv0, sizeof(g_argv0), "%s", argv[0]); }
+    /* Expose this host toolchain binary to the self-hosted .mil so it can
+     * delegate native builds back to the boot C backend. */
+#ifdef _WIN32
+    _putenv_s("MINILANG_BOOT", g_argv0);
+#else
+    setenv("MINILANG_BOOT", g_argv0, 1);
+#endif
     /* Register C-implemented native methods (sqrt, abs, time, getenv, ...). */
     ml_native_register_builtins();
     if (argc < 2) usage(argv[0]);
