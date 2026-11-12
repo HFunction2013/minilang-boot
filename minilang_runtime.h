@@ -79,6 +79,7 @@ Value ml_lte(Value a, Value b);
 Value ml_gte(Value a, Value b);
 Value ml_and(Value a, Value b);  /* truthy-based, returns int 0/1 */
 Value ml_or(Value a, Value b);
+Value ml_not(Value a);           /* truthy-negation, returns int 0/1 */
 
 /* ---- I/O / misc (mirror builtins) -------------------------------------- */
 void ml_print(Value v, int32_t newline);
