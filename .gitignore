@@ -11,3 +11,4 @@
 /tests/hello
 /tests/require_test
 .DS_Store
+build/
