@@ -730,7 +730,7 @@ static void cc_tool(char *out, size_t outsz) {
     const char *cc = getenv("CC");
     if (cc && cc[0]) { snprintf(out, outsz, "%s", cc); return; }
 #ifdef _WIN32
-    snprintf(out, outsz, "clang");
+    snprintf(out, outsz, "cl");
 #else
     snprintf(out, outsz, "cc");
 #endif
