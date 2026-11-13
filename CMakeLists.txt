@@ -22,6 +22,10 @@ set(SOURCES
 
 add_executable(minilang ${SOURCES})
 
+# Export the ml_* runtime helpers so a prebuilt extension DLL can resolve them
+# against this executable (MINI_API in minilang_runtime.h maps to dllexport).
+target_compile_definitions(minilang PRIVATE MINILANG_EXPORTS)
+
 # MSVC-specific: disable warnings about CRT deprecation (strdup etc. are
 # mapped to _strdup in minilang.h, but MSVC still warns).
 if(MSVC)

@@ -839,15 +839,17 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
     size_t rem = sizeof(cmd_buf);
     int written;
     if (msvc) {
-        /* MSVC (cl): /O2, /I<dir>, /Fe<bin>; no -no-pie (linker flag unknown). */
-        written = snprintf(p, rem, "\"%s\" /O2 /I\"%s\" /Fe\"%s\" \"%s\" \"%s\"",
+        /* MSVC (cl): /O2, /I<dir>, /Fe<bin>; no -no-pie (linker flag unknown).
+         * Define MINILANG_EXPORTS so runtime.c's helpers are not seen as
+         * dllimport inside this executable. */
+        written = snprintf(p, rem, "\"%s\" /O2 /DMINILANG_EXPORTS /I\"%s\" /Fe\"%s\" \"%s\" \"%s\"",
                  cc, rtc_dir, binpath, cpath, rtc);
     } else {
 #ifdef _WIN32
-        written = snprintf(p, rem, "\"%s\" -O2 -I\"%s\" -o \"%s\" \"%s\" \"%s\"",
+        written = snprintf(p, rem, "\"%s\" -O2 -DMINILANG_EXPORTS -I\"%s\" -o \"%s\" \"%s\" \"%s\"",
                  cc, rtc_dir, binpath, cpath, rtc);
 #else
-        written = snprintf(p, rem, "%s -O2 -I%s -no-pie -o %s %s %s",
+        written = snprintf(p, rem, "%s -O2 -DMINILANG_EXPORTS -I%s -no-pie -o %s %s %s",
                  cc, rtc_dir, binpath, cpath, rtc);
 #endif
     }

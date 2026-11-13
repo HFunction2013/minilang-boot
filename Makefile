@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=gnu11
+CFLAGS = -Wall -Wextra -O2 -std=gnu11 -DMINILANG_EXPORTS
 SRCS = value.c lexer.c parser.c bytecode.c vm.c c_gen.c milc_io.c native.c runtime.c main.c
 OBJS = $(SRCS:.c=.o)
 TARGET = minilang

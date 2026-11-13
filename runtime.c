@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include "minilang_runtime.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -23,15 +24,6 @@ void ml_set_args(int argc, char **argv) {
     g_argv = argv;
 }
 
-typedef struct {
-    int64_t tag;     /* 0=nil, 1=int, 2=string, 3=array, 4=opaque */
-    int64_t payload; /* int value, or pointer cast to i64 */
-} Value;
-
-typedef struct {
-    int64_t len;
-    Value *data;
-} Array;
 
 #define TAG_NIL 0
 #define TAG_INT 1
