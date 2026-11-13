@@ -759,6 +759,22 @@ static int cc_is_msvc(const char *cc) {
     return cc_name_eq(base, "cl") || cc_name_eq(base, "cl.exe");
 }
 
+/* A C++ driver (g++/clang++/c++) still compiles the generated translation
+ * unit as C: force `-x c` so the packed ABI stays unmangled and matches the
+ * C-built runtime and precompiled extension objects. The driver itself is
+ * still used for linking. */
+static int cc_is_cxx(const char *cc) {
+    const char *base = cc;
+    const char *slash = strrchr(cc, '/');
+#ifdef _WIN32
+    const char *bs = strrchr(cc, '\\');
+    if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+    if (slash) base = slash + 1;
+    size_t n = strlen(base);
+    return n >= 2 && base[n - 1] == '+' && base[n - 2] == '+';
+}
+
 /* build -e [prebuilt ext libs ...]: generate a C translation unit, then compile
  * it with the system C compiler at -O2 and link against runtime.c plus any
  * user-supplied precompiled extension objects/libraries.
@@ -834,6 +850,7 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
     char cc[512];
     cc_tool(cc, sizeof(cc));
     int msvc = cc_is_msvc(cc);
+    const char *cxx_x = cc_is_cxx(cc) ? "-x c" : "";
     char cmd_buf[6144];
     char *p = cmd_buf;
     size_t rem = sizeof(cmd_buf);
@@ -846,11 +863,11 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
                  cc, rtc_dir, binpath, cpath, rtc);
     } else {
 #ifdef _WIN32
-        written = snprintf(p, rem, "\"%s\" -O2 -DMINILANG_EXPORTS -I\"%s\" -o \"%s\" \"%s\" \"%s\"",
-                 cc, rtc_dir, binpath, cpath, rtc);
+        written = snprintf(p, rem, "\"%s\" -O2 %s -DMINILANG_EXPORTS -I\"%s\" -o \"%s\" \"%s\" \"%s\"",
+                 cc, cxx_x, rtc_dir, binpath, cpath, rtc);
 #else
-        written = snprintf(p, rem, "%s -O2 -DMINILANG_EXPORTS -I%s -no-pie -o %s %s %s",
-                 cc, rtc_dir, binpath, cpath, rtc);
+        written = snprintf(p, rem, "%s -O2 %s -DMINILANG_EXPORTS -I%s -no-pie -o %s %s %s",
+                 cc, cxx_x, rtc_dir, binpath, cpath, rtc);
 #endif
     }
     if (written < 0 || (size_t)written >= rem) { fprintf(stderr, "command line too long\n"); exit(1); }
