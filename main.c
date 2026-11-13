@@ -876,7 +876,16 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
     }
 
     fprintf(stderr, "  $ %s\n", cmd_buf);
+#ifdef _WIN32
+    /* cmd /c strips the first and last quote of an un-wrapped command line,
+     * which corrupts the inner quoted paths. Wrap the whole command in one
+     * outer pair so that pair is stripped and the inner quotes survive. */
+    char sys_cmd[6200];
+    snprintf(sys_cmd, sizeof(sys_cmd), "\"%s\"", cmd_buf);
+    int ret = system(sys_cmd);
+#else
     int ret = system(cmd_buf);
+#endif
     if (ret != 0) { fprintf(stderr, "C compilation failed (set CC or install a C compiler)\n"); exit(1); }
     printf("Executable built: %s\n", binpath);
     parser_free(parser);
