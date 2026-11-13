@@ -736,6 +736,29 @@ static void cc_tool(char *out, size_t outsz) {
 #endif
 }
 
+/* Case-insensitive basename match (portable: MSVC has no strcasecmp). */
+static int cc_name_eq(const char *base, const char *want) {
+    for (; *want; base++, want++) {
+        char b = *base;
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (b != *want) return 0;
+    }
+    return *base == '\0';
+}
+
+/* Classify the driver by basename. MSVC is `cl`/`cl.exe`; every other driver
+ * (cc/gcc/g++/clang/clang++) follows the GCC/Clang `-O2 -I ... -o` dialect. */
+static int cc_is_msvc(const char *cc) {
+    const char *base = cc;
+    const char *slash = strrchr(cc, '/');
+#ifdef _WIN32
+    const char *bs = strrchr(cc, '\\');
+    if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+    if (slash) base = slash + 1;
+    return cc_name_eq(base, "cl") || cc_name_eq(base, "cl.exe");
+}
+
 /* build -e [prebuilt ext libs ...]: generate a C translation unit, then compile
  * it with the system C compiler at -O2 and link against runtime.c plus any
  * user-supplied precompiled extension objects/libraries.
@@ -810,16 +833,24 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
 
     char cc[512];
     cc_tool(cc, sizeof(cc));
+    int msvc = cc_is_msvc(cc);
     char cmd_buf[6144];
     char *p = cmd_buf;
     size_t rem = sizeof(cmd_buf);
+    int written;
+    if (msvc) {
+        /* MSVC (cl): /O2, /I<dir>, /Fe<bin>; no -no-pie (linker flag unknown). */
+        written = snprintf(p, rem, "\"%s\" /O2 /I\"%s\" /Fe\"%s\" \"%s\" \"%s\"",
+                 cc, rtc_dir, binpath, cpath, rtc);
+    } else {
 #ifdef _WIN32
-    int written = snprintf(p, rem, "\"%s\" -O2 -I\"%s\" -o \"%s\" \"%s\" \"%s\"",
-             cc, rtc_dir, binpath, cpath, rtc);
+        written = snprintf(p, rem, "\"%s\" -O2 -I\"%s\" -o \"%s\" \"%s\" \"%s\"",
+                 cc, rtc_dir, binpath, cpath, rtc);
 #else
-    int written = snprintf(p, rem, "%s -O2 -I%s -no-pie -o %s %s %s",
-             cc, rtc_dir, binpath, cpath, rtc);
+        written = snprintf(p, rem, "%s -O2 -I%s -no-pie -o %s %s %s",
+                 cc, rtc_dir, binpath, cpath, rtc);
 #endif
+    }
     if (written < 0 || (size_t)written >= rem) { fprintf(stderr, "command line too long\n"); exit(1); }
     p += written; rem -= (size_t)written;
 

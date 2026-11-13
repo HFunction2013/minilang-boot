@@ -11,6 +11,10 @@
 #include <windows.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 static int g_argc = 0;
 static char **g_argv = NULL;
 
@@ -70,9 +74,9 @@ int ml_is_opaque(Value v) { return v.tag == TAG_OPAQUE; }
 
 /* Array constructors/accessors (in addition to ml_array_make/get/set) */
 Value ml_mkarray(int64_t len) {
-    Array *a = malloc(sizeof(Array));
+    Array *a = (Array *)malloc(sizeof(Array));
     a->len = len;
-    a->data = len > 0 ? calloc((size_t)len, sizeof(Value)) : NULL;
+    a->data = len > 0 ? (Value *)calloc((size_t)len, sizeof(Value)) : NULL;
     Value nilv = {TAG_NIL, 0};
     for (int64_t i = 0; i < len; i++) a->data[i] = nilv;
     Value v = {TAG_ARR, (int64_t)(intptr_t)a};
@@ -142,7 +146,7 @@ Value ml_add(Value a, Value b) {
         if (b.tag == TAG_STR) sb = cstr(b);
         else { snprintf(buf_b, sizeof(buf_b), "%lld", (long long)b.payload); sb = buf_b; }
         size_t la = strlen(sa), lb = strlen(sb);
-        char *r = malloc(la + lb + 1);
+        char *r = (char *)malloc(la + lb + 1);
         memcpy(r, sa, la); memcpy(r + la, sb, lb);
         r[la + lb] = '\0';
         Value v = {TAG_STR, (int64_t)(intptr_t)r};
@@ -206,9 +210,9 @@ Value ml_or(Value a, Value b) { return vint(truthy(a) || truthy(b)); }
 Value ml_not(Value a) { return vint(!truthy(a)); }
 
 Value ml_array_create(int64_t count, Value *items) {
-    Array *a = malloc(sizeof(Array));
+    Array *a = (Array *)malloc(sizeof(Array));
     a->len = count;
-    a->data = malloc(sizeof(Value) * (count > 0 ? count : 1));
+    a->data = (Value *)malloc(sizeof(Value) * (count > 0 ? count : 1));
     for (int64_t i = 0; i < count; i++) a->data[i] = items[i];
     Value v = {TAG_ARR, (int64_t)(intptr_t)a};
     return v;
@@ -218,9 +222,9 @@ Value ml_array_create(int64_t count, Value *items) {
 Value ml_array_make(Value sizev, Value init) {
     int64_t size = sizev.payload;
     if (size < 0) size = 0;
-    Array *a = malloc(sizeof(Array));
+    Array *a = (Array *)malloc(sizeof(Array));
     a->len = size;
-    a->data = malloc(sizeof(Value) * (size > 0 ? size : 1));
+    a->data = (Value *)malloc(sizeof(Value) * (size > 0 ? size : 1));
     for (int64_t i = 0; i < size; i++) a->data[i] = init;
     Value v = {TAG_ARR, (int64_t)(intptr_t)a};
     return v;
@@ -251,7 +255,7 @@ Value ml_readfile(Value pathv) {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *buf = malloc(size + 1);
+    char *buf = (char *)malloc(size + 1);
     (void)fread(buf, 1, size, f);
     buf[size] = '\0';
     fclose(f);
@@ -277,7 +281,7 @@ Value ml_readfilebytes(Value pathv) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (size < 0) size = 0;
-    Value *items = malloc(sizeof(Value) * (size > 0 ? size : 1));
+    Value *items = (Value *)malloc(sizeof(Value) * (size > 0 ? size : 1));
     long n = 0;
     int c;
     while (n < size && (c = fgetc(f)) != EOF) items[n++] = vint((unsigned char)c);
@@ -399,7 +403,7 @@ Value ml_substr(Value s, Value start, Value len) {
     if (st > slen) st = slen;
     if (st + ln > slen) ln = slen - st;
     if (ln < 0) ln = 0;
-    char *r = malloc(ln + 1);
+    char *r = (char *)malloc(ln + 1);
     memcpy(r, str + st, ln);
     r[ln] = '\0';
     Value v = {TAG_STR, (int64_t)(intptr_t)r};
@@ -431,10 +435,10 @@ Value ml_strcmp(Value a, Value b) {
 
 Value ml_readall(void) {
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = (char *)malloc(cap);
     int c;
     while ((c = fgetc(stdin)) != EOF) {
-        if (len + 1 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+        if (len + 1 >= cap) { cap *= 2; buf = (char *)realloc(buf, cap); }
         buf[len++] = (char)c;
     }
     buf[len] = '\0';
@@ -529,3 +533,7 @@ Value ml_native_ext_build_load(Value exts, Value names, Value params) {
           "(use the boot minilang binary)\n", stderr);
     return vint(1);
 }
+
+#ifdef __cplusplus
+}
+#endif
