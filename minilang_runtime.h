@@ -120,6 +120,19 @@ MINI_API Value ml_toint(Value v);
 MINI_API Value ml_strcmp(Value a, Value b);
 MINI_API Value ml_readall(void);
 
+/* ---- Built-in packed native entry points referenced by the generated C ----
+ * Declared with C linkage so a C++ driver (g++) does not mangle the calls. */
+MINI_API Value ml_native_sqrt(Value n);
+MINI_API Value ml_native_abs(Value n);
+MINI_API Value ml_native_time(void);
+MINI_API Value ml_native_clock_ms(void);
+MINI_API Value ml_native_getenv(Value name);
+MINI_API Value ml_native_cwrite(Value s);
+MINI_API Value ml_native_exit(Value code);
+MINI_API Value ml_native_csystem(Value cmd);
+MINI_API Value ml_native_native_invoke(Value name, Value args);
+MINI_API Value ml_native_ext_build_load(Value exts, Value names, Value params);
+
 /* ---- Native registry (C bootstrap VM) -----------------------------------
  * The VM looks natives up by base name via ml_native_lookup. When a prebuilt
  * shared library is loaded, each declared `native func name(...)` is resolved
