@@ -39,6 +39,15 @@
 #  define MINI_API
 #endif
 
+/* Export macro for the extension's own `ml_native_<name>` entry points. A
+ * Windows /LD build only exports explicitly dllexport symbols, so annotate
+ * each extension entry point with this; a no-op off Windows. */
+#if defined(_WIN32)
+#  define MINI_EXT_API __declspec(dllexport)
+#else
+#  define MINI_EXT_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
