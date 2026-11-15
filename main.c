@@ -748,8 +748,9 @@ static int cc_name_eq(const char *base, const char *want) {
     return *base == '\0';
 }
 
-/* Classify the driver by basename. MSVC is `cl`/`cl.exe`; every other driver
- * (cc/gcc/g++/clang/clang++) follows the GCC/Clang `-O2 -I ... -o` dialect. */
+/* Classify the driver by basename. MSVC is `cl`/`cl.exe`; on Windows the
+ * MSVC-ABI `clang`/`clang++` also speaks the MSVC dialect. Every other driver
+ * (cc/gcc/g++/clang/clang++ on Unix) follows the GCC/Clang `-O2 -I ... -o` dialect. */
 static int cc_is_msvc(const char *cc) {
     const char *base = cc;
     const char *slash = strrchr(cc, '/');
@@ -758,7 +759,15 @@ static int cc_is_msvc(const char *cc) {
     if (bs && (!slash || bs > slash)) slash = bs;
 #endif
     if (slash) base = slash + 1;
-    return cc_name_eq(base, "cl") || cc_name_eq(base, "cl.exe");
+    if (cc_name_eq(base, "cl") || cc_name_eq(base, "cl.exe")) return 1;
+#ifdef _WIN32
+    /* The LLVM / VS-bundled clang on Windows runners targets the MSVC ABI
+     * (x86_64-pc-windows-msvc) and accepts the /LD /O2 /Fe dialect; it does
+     * not understand the GNU -fPIC/-shared flags. Treat it as MSVC dialect. */
+    if (cc_name_eq(base, "clang") || cc_name_eq(base, "clang.exe") ||
+        cc_name_eq(base, "clang++") || cc_name_eq(base, "clang++.exe")) return 1;
+#endif
+    return 0;
 }
 
 /* A C++ driver (g++/clang++/c++) still compiles the generated translation
@@ -892,7 +901,10 @@ static int genheader(const char *file) {
     fprintf(h, "#include \"minilang_runtime.h\"\n\n");
     fprintf(h, "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
     for (int i = 0; i < nd; i++) {
-        fprintf(h, "Value ml_native_%s(", names[i]);
+        /* Match the definition's MINI_EXT_API linkage so MSVC does not raise
+         * C2375 (redefinition; different linkage) between the plain extern
+         * declaration and the dllexport definition. */
+        fprintf(h, "MINI_EXT_API Value ml_native_%s(", names[i]);
         for (int p = 0; p < params[i]; p++) {
             if (p > 0) fprintf(h, ", ");
             fprintf(h, "Value v%d", p);
@@ -995,8 +1007,14 @@ static int compileheader(const char *file) {
         snprintf(p, rem, " /Fe\"%s\"", sopath);
     } else {
 #ifdef _WIN32
-        written = snprintf(p, rem, "\"%s\" -O2 %s -fPIC -shared -I\"%s\" \"%s\" -o \"%s\"",
-                 cc, cxx_x, rtc_dir, cpath, sopath);
+        written = snprintf(p, rem, "\"%s\" -O2 %s -fPIC -shared -I\"%s\" \"%s\"",
+                 cc, cxx_x, rtc_dir, cpath);
+        p += written; rem -= (size_t)written;
+        if (implib[0]) {
+            int w2 = snprintf(p, rem, " \"%s\"", implib);
+            p += w2; rem -= (size_t)w2;
+        }
+        snprintf(p, rem, " -o \"%s\"", sopath);
 #else
         written = snprintf(p, rem, "%s -O2 %s -fPIC %s -I%s %s -o %s",
                  cc, cxx_x, ML_SHARED_FLAG, rtc_dir, cpath, sopath);
