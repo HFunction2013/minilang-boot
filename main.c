@@ -229,6 +229,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  bytecode <file>   Disassemble .mil, or read a .milc bytecode file\n");
     fprintf(stderr, "  dump-text <file>  Text bytecode for .mil, or read a .milc bytecode file\n");
     fprintf(stderr, "  c <file>          Compile to C source (.c)\n");
+    fprintf(stderr, "  genheader <file>  Emit packed-ABI C header + stub source for its native funcs\n");
+    fprintf(stderr, "  compileheader <file>  Precompile the generated stub into a shared library\n");
     fprintf(stderr, "  build [opts] <file>  Compile to native executable or .milc bytecode\n");
     fprintf(stderr, "    -b, --bytecode     write bytecode file (.milc, magic \"!milc\")\n");
     fprintf(stderr, "    -e, --executable   write native executable (C source + system cc -O2, default)\n");
@@ -771,8 +773,251 @@ static int cc_is_cxx(const char *cc) {
     if (bs && (!slash || bs > slash)) slash = bs;
 #endif
     if (slash) base = slash + 1;
-    size_t n = strlen(base);
-    return n >= 2 && base[n - 1] == '+' && base[n - 2] == '+';
+    /* Recognise C++ drivers by prefix, tolerating a version suffix such as
+     * `g++-15` or `clang++-18` (Homebrew / distro versioned aliases). */
+    return strncmp(base, "g++", 3) == 0 ||
+           strncmp(base, "clang++", 7) == 0 ||
+           strncmp(base, "c++", 3) == 0;
+}
+
+/* Copy `path` without its trailing extension into `out` (extension dot must
+ * sit after the last path separator). */
+static void strip_ext(const char *path, char *out, size_t outsz) {
+    snprintf(out, outsz, "%s", path);
+    char *dot = strrchr(out, '.');
+    char *sep = strrchr(out, '/');
+#ifdef _WIN32
+    char *bs = strrchr(out, '\\');
+    if (bs && (!sep || bs > sep)) sep = bs;
+#endif
+    if (dot && (!sep || dot > sep)) *dot = '\0';
+}
+
+/* Uppercase identifier for a header guard: alnum kept, other chars '_'. */
+static void guard_name(const char *base, char *out, size_t outsz) {
+    size_t i = 0;
+    for (const char *p = base; *p && i + 1 < outsz; p++) {
+        char c = *p;
+        if (isalnum((unsigned char)c)) {
+            out[i++] = (char)(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+        } else {
+            out[i++] = '_';
+        }
+    }
+    out[i] = '\0';
+}
+
+/* Locate the directory holding runtime.c / minilang_runtime.h, mirroring the
+ * resolution used by build_executable. */
+static void find_runtime_dir(char *out, size_t outsz) {
+    const char *d = getenv("MINILANG_DIR");
+    char exe_dir[1024];
+    if (d && d[0]) snprintf(exe_dir, sizeof(exe_dir), "%s", d);
+    else if (!get_exe_dir(exe_dir, sizeof(exe_dir))) snprintf(exe_dir, sizeof(exe_dir), ".");
+    char rtc[1200];
+    snprintf(rtc, sizeof(rtc), "%s/runtime.c", exe_dir);
+    if (access(rtc, 0) != 0) {
+        snprintf(rtc, sizeof(rtc), "%s/../minilang-boot/runtime.c", exe_dir);
+        if (access(rtc, 0) != 0) {
+            snprintf(rtc, sizeof(rtc), "%s/minilang-boot/runtime.c", exe_dir);
+            if (access(rtc, 0) != 0) snprintf(rtc, sizeof(rtc), "../minilang-boot/runtime.c");
+        }
+    }
+    snprintf(out, outsz, "%s", rtc);
+    char *slash = strrchr(out, '/');
+#ifdef _WIN32
+    char *bs = strrchr(out, '\\');
+    if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+    if (slash) *slash = '\0';
+    else strcpy(out, ".");
+}
+
+/* genheader <file.mil>: collect every `native func` declaration and emit a
+ * paired C header (packed-ABI prototypes) and C source (stub definitions that
+ * return ml_nil()). Entry points follow the packed ABI naming the loader
+ * resolves: ml_native_<packed base>(Value ...). Writes <base>.h and <base>.c
+ * next to the source file. Returns 0 on success. */
+static int genheader(const char *file) {
+    char *src = read_file(file);
+    set_dirs_from_file(file);
+    /* Parse only: a native declaration library has no `main`, so we must not
+     * run the bytecode compiler's main-function check. The parsed AST carries
+     * the `native func` declarations we need. */
+    Lexer *lexer = lexer_new(src);
+    lex(lexer);
+    Parser *parser = parser_new(lexer);
+    parse(parser);
+
+    int cap = 8, nd = 0;
+    char **names = calloc((size_t)cap, sizeof(char *));
+    int *params = calloc((size_t)cap, sizeof(int));
+    if (!names || !params) { fprintf(stderr, "out of memory\n"); exit(1); }
+    for (int i = 0; i < parser->func_count; i++) {
+        Node *f = parser->funcs[i];
+        if (!f->func.is_native) continue;
+        if (nd >= cap) {
+            cap *= 2;
+            names = realloc(names, (size_t)cap * sizeof(char *));
+            params = realloc(params, (size_t)cap * sizeof(int));
+        }
+        char base[128];
+        packed_base(f->func.name, base, sizeof(base));
+        names[nd] = strdup(base);
+        params[nd] = f->func.param_count;
+        nd++;
+    }
+
+    char base[1024];
+    strip_ext(file, base, sizeof(base));
+    char hpath[1024], cpath[1024], hbase[256];
+    snprintf(hpath, sizeof(hpath), "%s.h", base);
+    snprintf(cpath, sizeof(cpath), "%s.c", base);
+    {
+        const char *slash = strrchr(base, '/');
+#ifdef _WIN32
+        const char *bs = strrchr(base, '\\');
+        if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+        snprintf(hbase, sizeof(hbase), "%s", slash ? slash + 1 : base);
+    }
+    char guard[256];
+    guard_name(hbase, guard, sizeof(guard));
+
+    FILE *h = fopen(hpath, "w");
+    if (!h) { fprintf(stderr, "Cannot write %s\n", hpath); exit(1); }
+    fprintf(h, "/* Auto-generated by `minilang genheader %s`. Do not edit by hand.\n", file);
+    fprintf(h, " * Packed-ABI entry points for the native funcs declared in this module. */\n");
+    fprintf(h, "#ifndef %s_H\n#define %s_H\n\n", guard, guard);
+    fprintf(h, "#include \"minilang_runtime.h\"\n\n");
+    fprintf(h, "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
+    for (int i = 0; i < nd; i++) {
+        fprintf(h, "Value ml_native_%s(", names[i]);
+        for (int p = 0; p < params[i]; p++) {
+            if (p > 0) fprintf(h, ", ");
+            fprintf(h, "Value v%d", p);
+        }
+        fprintf(h, ");\n");
+    }
+    fprintf(h, "\n#ifdef __cplusplus\n}\n#endif\n\n#endif /* %s_H */\n", guard);
+    fclose(h);
+
+    FILE *cf = fopen(cpath, "w");
+    if (!cf) { fprintf(stderr, "Cannot write %s\n", cpath); exit(1); }
+    fprintf(cf, "/* Auto-generated stub by `minilang genheader %s`. Fill each body;\n", file);
+    fprintf(cf, " * the default stub returns nil. Packed ABI: Value ml_native_<name>(Value ...). */\n\n");
+    {
+        char hfile[256];
+        snprintf(hfile, sizeof(hfile), "%s.h", hbase);
+        fprintf(cf, "#include \"%s\"\n\n", hfile);
+    }
+    for (int i = 0; i < nd; i++) {
+        fprintf(cf, "MINI_EXT_API Value ml_native_%s(", names[i]);
+        for (int p = 0; p < params[i]; p++) {
+            if (p > 0) fprintf(cf, ", ");
+            fprintf(cf, "Value v%d", p);
+        }
+        fprintf(cf, ") {\n");
+        fprintf(cf, "    /* TODO: implement ml_native_%s */\n", names[i]);
+        fprintf(cf, "    return ml_nil();\n}\n\n");
+    }
+    fclose(cf);
+
+    for (int i = 0; i < nd; i++) free(names[i]);
+    free(names);
+    free(params);
+    parser_free(parser);
+    lexer_free(lexer);
+    free(src);
+
+    if (nd == 0) fprintf(stderr, "Warning: no `native func` declarations found in %s\n", file);
+    printf("Header written: %s\n", hpath);
+    printf("Stub source written: %s\n", cpath);
+    return 0;
+}
+
+/* compileheader <file.mil>: (re)generate the paired header/stub via genheader,
+ * then precompile the stub C source into a linkable shared library
+ * (<base>.<so|dylib|dll>). This is an explicit precompile step only: the
+ * toolchain still never compiles extension C at runtime, and raw `.c` sources
+ * passed to `run -e`/`build -e` remain rejected. */
+static int compileheader(const char *file) {
+    if (genheader(file) != 0) return 1;
+
+    char base[1024];
+    strip_ext(file, base, sizeof(base));
+    char cpath[1024], sopath[1024];
+    snprintf(cpath, sizeof(cpath), "%s.c", base);
+    snprintf(sopath, sizeof(sopath), "%s.%s", base, ML_SHLIB_EXT);
+
+    char rtc_dir[1200];
+    find_runtime_dir(rtc_dir, sizeof(rtc_dir));
+
+    char cc[512];
+    cc_tool(cc, sizeof(cc));
+    int msvc = cc_is_msvc(cc);
+    const char *cxx_x = cc_is_cxx(cc) ? "-x c" : "";
+
+    /* Windows: a DLL cannot resolve host helpers from the loaded executable the
+     * way ELF/dlopen does; link the boot exe's import library when present. */
+    char implib[1200] = "";
+#ifdef _WIN32
+    {
+        char exe_dir[1024];
+        const char *d = getenv("MINILANG_DIR");
+        if (d && d[0]) snprintf(exe_dir, sizeof(exe_dir), "%s", d);
+        else if (!get_exe_dir(exe_dir, sizeof(exe_dir))) snprintf(exe_dir, sizeof(exe_dir), ".");
+        const char *stem = g_argv0;
+        const char *sl = strrchr(g_argv0, '/');
+        const char *bs = strrchr(g_argv0, '\\');
+        if (bs && (!sl || bs > sl)) sl = bs;
+        if (sl) stem = sl + 1;
+        char stem2[256];
+        snprintf(stem2, sizeof(stem2), "%s", stem);
+        char *dot = strrchr(stem2, '.');
+        if (dot) *dot = '\0';
+        snprintf(implib, sizeof(implib), "%s%c%s.lib", exe_dir, ML_PATH_SEP, stem2);
+        if (access(implib, 0) != 0) implib[0] = '\0';
+    }
+#endif
+
+    char cmd_buf[6144];
+    char *p = cmd_buf;
+    size_t rem = sizeof(cmd_buf);
+    int written;
+    if (msvc) {
+        written = snprintf(p, rem, "\"%s\" /O2 /I\"%s\" /LD \"%s\"", cc, rtc_dir, cpath);
+        p += written; rem -= (size_t)written;
+        if (implib[0]) {
+            int w2 = snprintf(p, rem, " \"%s\"", implib);
+            p += w2; rem -= (size_t)w2;
+        }
+        snprintf(p, rem, " /Fe\"%s\"", sopath);
+    } else {
+#ifdef _WIN32
+        written = snprintf(p, rem, "\"%s\" -O2 %s -fPIC -shared -I\"%s\" \"%s\" -o \"%s\"",
+                 cc, cxx_x, rtc_dir, cpath, sopath);
+#else
+        written = snprintf(p, rem, "%s -O2 %s -fPIC %s -I%s %s -o %s",
+                 cc, cxx_x, ML_SHARED_FLAG, rtc_dir, cpath, sopath);
+#endif
+    }
+    if (written < 0 || (size_t)written >= rem) { fprintf(stderr, "command line too long\n"); exit(1); }
+
+    fprintf(stderr, "  $ %s\n", cmd_buf);
+#ifdef _WIN32
+    char sys_cmd[6200];
+    snprintf(sys_cmd, sizeof(sys_cmd), "\"%s\"", cmd_buf);
+    int ret = system(sys_cmd);
+#else
+    int ret = system(cmd_buf);
+#endif
+    if (ret != 0) {
+        fprintf(stderr, "header shared-library compilation failed (set CC or install a C compiler)\n");
+        return 1;
+    }
+    printf("Shared library built: %s\n", sopath);
+    return 0;
 }
 
 /* build -e [prebuilt ext libs ...]: generate a C translation unit, then compile
@@ -1041,6 +1286,14 @@ int main(int argc, char **argv) {
         lexer_free(lexer);
         free(src);
         return 0;
+    }
+    if (strcmp(cmd, "genheader") == 0) {
+        if (argc < 3) usage(argv[0]);
+        return genheader(argv[2]);
+    }
+    if (strcmp(cmd, "compileheader") == 0) {
+        if (argc < 3) usage(argv[0]);
+        return compileheader(argv[2]);
     }
     if (strcmp(cmd, "build") == 0) {
         int idx = 2;
