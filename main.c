@@ -748,9 +748,11 @@ static int cc_name_eq(const char *base, const char *want) {
     return *base == '\0';
 }
 
-/* Classify the driver by basename. MSVC is `cl`/`cl.exe`; on Windows the
- * MSVC-ABI `clang`/`clang++` also speaks the MSVC dialect. Every other driver
- * (cc/gcc/g++/clang/clang++ on Unix) follows the GCC/Clang `-O2 -I ... -o` dialect. */
+/* Classify the driver by basename. MSVC is `cl`/`cl.exe` (slash `/O2 /I /Fe`
+ * dialect). Every other driver — cc/gcc/g++/clang/clang++, including the plain
+ * `clang.exe` that targets the MSVC ABI on Windows — follows the GCC/Clang
+ * dash `-O2 -I ... -o` dialect. (clang-cl.exe would speak the MSVC dialect,
+ * but the runner exposes plain `clang`, not `clang-cl`.) */
 static int cc_is_msvc(const char *cc) {
     const char *base = cc;
     const char *slash = strrchr(cc, '/');
@@ -759,15 +761,7 @@ static int cc_is_msvc(const char *cc) {
     if (bs && (!slash || bs > slash)) slash = bs;
 #endif
     if (slash) base = slash + 1;
-    if (cc_name_eq(base, "cl") || cc_name_eq(base, "cl.exe")) return 1;
-#ifdef _WIN32
-    /* The LLVM / VS-bundled clang on Windows runners targets the MSVC ABI
-     * (x86_64-pc-windows-msvc) and accepts the /LD /O2 /Fe dialect; it does
-     * not understand the GNU -fPIC/-shared flags. Treat it as MSVC dialect. */
-    if (cc_name_eq(base, "clang") || cc_name_eq(base, "clang.exe") ||
-        cc_name_eq(base, "clang++") || cc_name_eq(base, "clang++.exe")) return 1;
-#endif
-    return 0;
+    return cc_name_eq(base, "cl") || cc_name_eq(base, "cl.exe");
 }
 
 /* A C++ driver (g++/clang++/c++) still compiles the generated translation
@@ -975,10 +969,10 @@ static int compileheader(const char *file) {
     char implib[1200] = "";
 #ifdef _WIN32
     {
+        /* The import library sits next to the boot executable itself; do NOT
+         * use MINILANG_DIR (that points at the .mil sources / compiler tree). */
         char exe_dir[1024];
-        const char *d = getenv("MINILANG_DIR");
-        if (d && d[0]) snprintf(exe_dir, sizeof(exe_dir), "%s", d);
-        else if (!get_exe_dir(exe_dir, sizeof(exe_dir))) snprintf(exe_dir, sizeof(exe_dir), ".");
+        if (!get_exe_dir(exe_dir, sizeof(exe_dir))) snprintf(exe_dir, sizeof(exe_dir), ".");
         const char *stem = g_argv0;
         const char *sl = strrchr(g_argv0, '/');
         const char *bs = strrchr(g_argv0, '\\');
@@ -1007,7 +1001,9 @@ static int compileheader(const char *file) {
         snprintf(p, rem, " /Fe\"%s\"", sopath);
     } else {
 #ifdef _WIN32
-        written = snprintf(p, rem, "\"%s\" -O2 %s -fPIC -shared -I\"%s\" \"%s\"",
+        /* No -fPIC: the plain clang targeting windows-msvc rejects it; MinGW
+         * does not require PIC for a DLL either. */
+        written = snprintf(p, rem, "\"%s\" -O2 %s -shared -I\"%s\" \"%s\"",
                  cc, cxx_x, rtc_dir, cpath);
         p += written; rem -= (size_t)written;
         if (implib[0]) {
