@@ -1011,7 +1011,11 @@ static int compileheader(const char *file) {
                  cc, cxx_x, rtc_dir, cpath);
         p += written; rem -= (size_t)written;
         if (implib[0]) {
-            int w2 = snprintf(p, rem, " \"%s\"", implib);
+            /* A C++ driver uses `-x c` for the stub; reset the language before
+             * the import library so ld treats the .dll.a/.lib as a linker
+             * input instead of feeding the archive to the C compiler. */
+            int w2 = snprintf(p, rem, "%s \"%s\"",
+                      cxx_x[0] ? " -x none" : "", implib);
             p += w2; rem -= (size_t)w2;
         }
         snprintf(p, rem, " -o \"%s\"", sopath);
@@ -1137,7 +1141,12 @@ static int build_executable(const char *file, char **exts, int ext_count, int dy
     p += written; rem -= (size_t)written;
 
     /* Precompiled extension artefacts (shared lib / object / archive) are
-     * passed straight to the link step. */
+     * passed straight to the link step. A C++ driver forced `-x c` for the
+     * C sources; reset it so objects/archives are linker inputs, not sources. */
+    if (cxx_x[0]) {
+        int w0 = snprintf(p, rem, " -x none");
+        p += w0; rem -= (size_t)w0;
+    }
     for (int i = 0; i < ext_count; i++) {
         const char *ext = exts[i];
         char ext_arg[1200];
