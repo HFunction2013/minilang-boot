@@ -37,3 +37,13 @@ endif()
 if(NOT WIN32)
     target_link_libraries(minilang PRIVATE m)
 endif()
+
+# MinGW: export every host helper and emit a GNU import library
+# (libminilang.dll.a) so a prebuilt MinGW extension DLL can link against this
+# executable. MSVC emits minilang.lib automatically for dllexport symbols; ld
+# does neither by default.
+if(MINGW)
+    target_link_options(minilang PRIVATE
+        "-Wl,--export-all-symbols"
+        "-Wl,--out-implib=libminilang.dll.a")
+endif()

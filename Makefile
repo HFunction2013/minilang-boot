@@ -9,7 +9,7 @@ TARGET = minilang
 # from the main binary. Linux/macOS use --export-dynamic; Windows (MinGW) has
 # no such flag and exports every symbol explicitly.
 ifeq ($(OS),Windows_NT)
-EXPORT_LDFLAGS = -Wl,--export-all-symbols
+EXPORT_LDFLAGS = -Wl,--export-all-symbols -Wl,--out-implib=libminilang.dll.a
 else
 UNAME := $(shell uname)
 ifeq ($(UNAME),Linux)
