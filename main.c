@@ -983,7 +983,11 @@ static int compileheader(const char *file) {
         char *dot = strrchr(stem2, '.');
         if (dot) *dot = '\0';
         snprintf(implib, sizeof(implib), "%s%c%s.lib", exe_dir, ML_PATH_SEP, stem2);
-        if (access(implib, 0) != 0) implib[0] = '\0';
+        if (access(implib, 0) != 0) {
+            /* MinGW ld convention: lib<stem>.dll.a as a fallback. */
+            snprintf(implib, sizeof(implib), "%s%clib%s.dll.a", exe_dir, ML_PATH_SEP, stem2);
+            if (access(implib, 0) != 0) implib[0] = '\0';
+        }
     }
 #endif
 
