@@ -16,15 +16,20 @@
 #define access     _access
 #define unlink     _unlink
 #define PATH_MAX   _MAX_PATH
-/* realpath(): POSIX. MSVC has _fullpath which has the same semantics for
-   our use (resolve a path into an absolute path in the second buffer). */
-static inline char *realpath(const char *path, char *resolved) {
-    return _fullpath(resolved, path, _MAX_PATH) ? resolved : NULL;
-}
 /* __attribute__((unused)) is GCC/Clang only. MSVC: no-op. */
 #define __attribute__(x)
 /* MSVC C mode needs inline spelled __inline */
 #define inline __inline
+#endif
+#if defined(_WIN32)
+/* realpath(): POSIX. Both MSVC and MinGW-w64 expose _fullpath, which has the
+   same semantics for our use (resolve a path into the second buffer). MinGW
+   hides the POSIX realpath prototype under strict feature-test macros, so
+   route through _fullpath instead of relying on it. */
+static inline char *_ml_fullpath(const char *path, char *resolved) {
+    return _fullpath(resolved, path, _MAX_PATH) ? resolved : NULL;
+}
+#define realpath _ml_fullpath
 #endif
 
 /* ===================== Value types ===================== */
