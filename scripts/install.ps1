@@ -17,7 +17,7 @@
 #   -Prefix    install prefix (default $env:LOCALAPPDATA\Programs\minilang)
 #   -Source    reuse an existing boot source tree instead of cloning
 #   -Repo      git URL to clone
-#   -Branch    branch/tag to clone (default experiment/asm-gen)
+#   -Branch    branch/tag to clone (default main; empty = remote HEAD)
 #   -KeepWork  keep the temporary build tree for inspection
 
 [CmdletBinding()]
@@ -25,7 +25,7 @@ param(
     [string]$Prefix = $(if ($env:MINILANG_PREFIX) { $env:MINILANG_PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\minilang' }),
     [string]$Source = $(if ($env:BOOT_SOURCE) { $env:BOOT_SOURCE } else { '' }),
     [string]$Repo = $(if ($env:MINILANG_BOOT_REPO) { $env:MINILANG_BOOT_REPO } else { 'https://github.com/HFunction2013/minilang-boot.git' }),
-    [string]$Branch = $(if ($env:MINILANG_BRANCH) { $env:MINILANG_BRANCH } else { 'experiment/asm-gen' }),
+    [string]$Branch = $(if ($env:MINILANG_BRANCH) { $env:MINILANG_BRANCH } else { 'main' }),
     [switch]$KeepWork
 )
 
@@ -43,8 +43,11 @@ if (-not $Source -and (Test-Path (Join-Path $RepoRoot 'main.c'))) {
     Log "Using local checkout: $Source"
 } else {
     $Work = Join-Path $env:TEMP ("minilang-boot-{0}" -f ([guid]::NewGuid().ToString('N').Substring(0,8)))
-    Log "Cloning $Repo ($Branch) -> $Work\boot"
-    git clone --depth 1 --branch $Branch $Repo (Join-Path $Work 'boot') | Out-Host
+    $cloneArgs = @('clone', '--depth', '1')
+    if ($Branch) { $cloneArgs += @('--branch', $Branch); Log "Cloning $Repo ($Branch) -> $Work\boot" }
+    else { Log "Cloning $Repo (remote HEAD) -> $Work\boot" }
+    $cloneArgs += @($Repo, (Join-Path $Work 'boot'))
+    git @cloneArgs | Out-Host
     $Source = Join-Path $Work 'boot'
     Push-Location $Source
     git submodule update --init --recursive | Out-Host
