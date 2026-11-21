@@ -49,7 +49,10 @@ function Get-Slug($Url) {
 }
 
 function Fetch-Repo($RepoUrl, $Name) {
-    if (-not $Work) { $script:Work = Join-Path $env:TEMP ("minilang-boot-{0}" -f ([guid]::NewGuid().ToString('N').Substring(0,8))) }
+    if (-not $Work) {
+        $script:Work = Join-Path $env:TEMP ("minilang-boot-{0}" -f ([guid]::NewGuid().ToString('N').Substring(0,8)))
+        New-Item -ItemType Directory -Force -Path $Work | Out-Null
+    }
     $dir = Join-Path $Work $Name
     if (Test-Path $dir) { return $dir }
     $useGit = $true
