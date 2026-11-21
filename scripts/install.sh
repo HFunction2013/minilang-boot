@@ -16,9 +16,11 @@
 #
 # Environment / flags:
 #   MINILANG_PREFIX   install prefix (default $HOME/.local)
-#   MINILANG_BOOT_REPO git URL to clone when no local checkout is used
-#   MINILANG_BRANCH   branch/tag to clone (default main; empty = remote HEAD)
-#   BOOT_SOURCE       reuse an existing boot source tree instead of cloning
+#   MINILANG_BOOT_REPO git URL to fetch when no local checkout is used
+#   MINILANG_SYS_REPO  syslib repo URL (fetched separately; archives omit submodules)
+#   MINILANG_BRANCH   branch/tag to fetch (default main; empty = remote HEAD via git)
+#   MINILANG_NO_GIT=1 skip git and download the source archive (tarball) instead
+#   BOOT_SOURCE       reuse an existing boot source tree instead of fetching
 #   KEEP_WORK=1       keep the temporary build tree for inspection
 set -eu
 
@@ -27,12 +29,64 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PREFIX="${MINILANG_PREFIX:-$HOME/.local}"
 REPO_URL="${MINILANG_BOOT_REPO:-https://github.com/HFunction2013/minilang-boot.git}"
+SYS_REPO="${MINILANG_SYS_REPO:-https://github.com/HFunction2013/minilang-syslib.git}"
 BRANCH="${MINILANG_BRANCH:-main}"
 BOOT_SOURCE="${BOOT_SOURCE:-}"
+SYS_SOURCE="${SYS_SOURCE:-}"
 
 log()  { printf '\033[1;36m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[install]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[install]\033[0m %s\n' "$*" >&2; exit 1; }
+
+slug_of() { # $1 repo url -> owner/repo (no scheme, host, .git)
+    u="$1"
+    u="${u#*://}"
+    u="${u#git@}"
+    u="${u#github.com/}"
+    u="${u#github.com:}"
+    u="${u%.git}"
+    u="${u%/}"
+    echo "$u"
+}
+
+http_download() { # $1 out-file, $2 url
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$2" -o "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$1" "$2"
+    else
+        die "no curl/wget available to download the source archive"
+    fi
+}
+
+fetch_repo() { # $1 repo url, $2 dirname, $3 out-var
+    url="$1"; dir="$2"
+    target="$WORK/$dir"
+    if [ -d "$target" ]; then
+        eval "$3=\$target"; return
+    fi
+    use_git=1
+    [ "${MINILANG_NO_GIT:-0}" = "1" ] && use_git=0
+    if [ "$use_git" = "1" ] && command -v git >/dev/null 2>&1; then
+        if [ -n "$BRANCH" ]; then
+            log "Cloning $url ($BRANCH)"
+            git clone --depth 1 --branch "$BRANCH" "$url" "$target"
+        else
+            log "Cloning $url (remote HEAD)"
+            git clone --depth 1 "$url" "$target"
+        fi
+    else
+        [ -n "$BRANCH" ] || die "git unavailable: set MINILANG_BRANCH to download an archive"
+        slug="$(slug_of "$url")"
+        archive="$WORK/$dir.tar.gz"
+        log "Downloading archive $slug @ $BRANCH (no git)"
+        http_download "$archive" "https://codeload.github.com/$slug/tar.gz/refs/heads/$BRANCH"
+        mkdir -p "$target"
+        tar -xzf "$archive" -C "$target" --strip-components=1
+        rm -f "$archive"
+    fi
+    eval "$3=\$target"
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -60,18 +114,17 @@ trap cleanup EXIT
 if [ -z "$BOOT_SOURCE" ] && [ -f "$REPO_ROOT/main.c" ]; then
     BOOT_SOURCE="$REPO_ROOT"
     log "Using local checkout: $BOOT_SOURCE"
-else
+fi
+if [ -z "$BOOT_SOURCE" ]; then
     WORK="$(mktemp -d)"
-    if [ -n "$BRANCH" ]; then
-        log "Cloning $REPO_URL ($BRANCH) -> $WORK/boot"
-        git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$WORK/boot"
-    else
-        log "Cloning $REPO_URL (remote HEAD) -> $WORK/boot"
-        git clone --depth 1 "$REPO_URL" "$WORK/boot"
-    fi
-    BOOT_SOURCE="$WORK/boot"
-    ( cd "$BOOT_SOURCE" && git submodule update --init --recursive ) || \
-        warn "syslib submodule did not initialize; system modules may be missing"
+    fetch_repo "$REPO_URL" boot BOOT_SOURCE
+fi
+if [ -z "$SYS_SOURCE" ] && [ -f "$BOOT_SOURCE/syslib/builtin.mil" ]; then
+    SYS_SOURCE="$BOOT_SOURCE/syslib"
+fi
+if [ -z "$SYS_SOURCE" ]; then
+    [ -n "$WORK" ] || WORK="$(mktemp -d)"
+    fetch_repo "$SYS_REPO" syslib SYS_SOURCE
 fi
 
 [ -f "$BOOT_SOURCE/main.c" ] || die "boot source not found at $BOOT_SOURCE"
@@ -106,8 +159,8 @@ done
 for f in runtime.c minilang.h minilang_runtime.h; do
     [ -f "$BOOT_SOURCE/$f" ] && cp "$BOOT_SOURCE/$f" "$LIB/"
 done
-if [ -d "$BOOT_SOURCE/syslib" ]; then
-    for f in "$BOOT_SOURCE"/syslib/*.mil; do
+if [ -d "$SYS_SOURCE" ]; then
+    for f in "$SYS_SOURCE"/*.mil; do
         [ -f "$f" ] && cp "$f" "$LIB/syslib/"
     done
 fi

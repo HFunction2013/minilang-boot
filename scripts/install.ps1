@@ -15,9 +15,11 @@
 #
 # Parameters:
 #   -Prefix    install prefix (default $env:LOCALAPPDATA\Programs\minilang)
-#   -Source    reuse an existing boot source tree instead of cloning
-#   -Repo      git URL to clone
-#   -Branch    branch/tag to clone (default main; empty = remote HEAD)
+#   -Source    reuse an existing boot source tree instead of fetching
+#   -Repo      boot git URL to fetch
+#   -SysRepo   syslib git URL (fetched separately; archives omit submodules)
+#   -Branch    branch/tag to fetch (default main; empty = remote HEAD via git)
+#   MINILANG_NO_GIT=1  skip git and download the source archive (zip) instead
 #   -KeepWork  keep the temporary build tree for inspection
 
 [CmdletBinding()]
@@ -25,34 +27,69 @@ param(
     [string]$Prefix = $(if ($env:MINILANG_PREFIX) { $env:MINILANG_PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\minilang' }),
     [string]$Source = $(if ($env:BOOT_SOURCE) { $env:BOOT_SOURCE } else { '' }),
     [string]$Repo = $(if ($env:MINILANG_BOOT_REPO) { $env:MINILANG_BOOT_REPO } else { 'https://github.com/HFunction2013/minilang-boot.git' }),
+    [string]$SysRepo = $(if ($env:MINILANG_SYS_REPO) { $env:MINILANG_SYS_REPO } else { 'https://github.com/HFunction2013/minilang-syslib.git' }),
+    [string]$SysSource = $(if ($env:SYS_SOURCE) { $env:SYS_SOURCE } else { '' }),
     [string]$Branch = $(if ($env:MINILANG_BRANCH) { $env:MINILANG_BRANCH } else { 'main' }),
     [switch]$KeepWork
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = $PSScriptRoot
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 
 function Log($m) { Write-Host "[install] $m" }
 function Die($m) { Write-Host "[install] $m" -ForegroundColor Red; exit 1 }
 
-# ---- 1. Locate source: explicit override, local checkout, else clone ----
+function Get-Slug($Url) {
+    $u = $Url -replace '^https?://', ''
+    $u = $u -replace '^git@', ''
+    $u = $u -replace '^github.com[:/]', ''
+    $u = $u -replace '\.git$', ''
+    return $u.TrimEnd('/')
+}
+
+function Fetch-Repo($RepoUrl, $Name) {
+    if (-not $Work) {
+        $script:Work = Join-Path $env:TEMP ("minilang-boot-{0}" -f ([guid]::NewGuid().ToString('N').Substring(0,8)))
+        New-Item -ItemType Directory -Force -Path $Work | Out-Null
+    }
+    $dir = Join-Path $Work $Name
+    if (Test-Path $dir) { return $dir }
+    $useGit = $true
+    if ($env:MINILANG_NO_GIT -eq '1') { $useGit = $false }
+    if ($useGit -and (Get-Command git -ErrorAction SilentlyContinue)) {
+        $cloneArgs = @('clone', '--depth', '1')
+        if ($Branch) { $cloneArgs += @('--branch', $Branch); Log "Cloning $RepoUrl ($Branch)" }
+        else { Log "Cloning $RepoUrl (remote HEAD)" }
+        $cloneArgs += @($RepoUrl, $dir)
+        git @cloneArgs | Out-Host
+    } else {
+        if (-not $Branch) { Die 'git unavailable: set -Branch / MINILANG_BRANCH to download an archive' }
+        $slug = Get-Slug $RepoUrl
+        $zip = Join-Path $Work "$Name.zip"
+        Log "Downloading archive $slug @ $Branch (no git)"
+        Invoke-WebRequest -Uri "https://codeload.github.com/$slug/zip/refs/heads/$Branch" -OutFile $zip
+        $extract = Join-Path $Work "$Name-extract"
+        Expand-Archive -Path $zip -DestinationPath $extract -Force
+        $nested = Get-ChildItem $extract -Directory | Select-Object -First 1
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Move-Item (Join-Path $nested.FullName '*') $dir -Force
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+    }
+    return $dir
+}
+
+# ---- 1. Locate source: explicit override, local checkout, else fetch ----
 $Work = $null
 if (-not $Source -and (Test-Path (Join-Path $RepoRoot 'main.c'))) {
     $Source = $RepoRoot
     Log "Using local checkout: $Source"
-} else {
-    $Work = Join-Path $env:TEMP ("minilang-boot-{0}" -f ([guid]::NewGuid().ToString('N').Substring(0,8)))
-    $cloneArgs = @('clone', '--depth', '1')
-    if ($Branch) { $cloneArgs += @('--branch', $Branch); Log "Cloning $Repo ($Branch) -> $Work\boot" }
-    else { Log "Cloning $Repo (remote HEAD) -> $Work\boot" }
-    $cloneArgs += @($Repo, (Join-Path $Work 'boot'))
-    git @cloneArgs | Out-Host
-    $Source = Join-Path $Work 'boot'
-    Push-Location $Source
-    git submodule update --init --recursive | Out-Host
-    Pop-Location
 }
+if (-not $Source) { $Source = Fetch-Repo $Repo 'boot' }
+if (-not $SysSource -and (Test-Path (Join-Path $Source 'syslib\builtin.mil'))) {
+    $SysSource = Join-Path $Source 'syslib'
+}
+if (-not $SysSource) { $SysSource = Fetch-Repo $SysRepo 'syslib' }
 if (-not (Test-Path (Join-Path $Source 'main.c'))) { Die "boot source not found at $Source" }
 
 # ---- 2. Compile on site (Windows: CMake, VS generator Release) ----
@@ -97,9 +134,8 @@ foreach ($f in 'runtime.c','minilang.h','minilang_runtime.h') {
     $src = Join-Path $Source $f
     if (Test-Path $src) { Copy-Item $src (Join-Path $Lib $f) -Force }
 }
-$sysSrc = Join-Path $Source 'syslib'
-if (Test-Path $sysSrc) {
-    Get-ChildItem -Path $sysSrc -Filter '*.mil' -File | ForEach-Object {
+if ($SysSource -and (Test-Path $SysSource)) {
+    Get-ChildItem -Path $SysSource -Filter '*.mil' -File | ForEach-Object {
         Copy-Item $_.FullName (Join-Path $Lib 'syslib') -Force
     }
 }

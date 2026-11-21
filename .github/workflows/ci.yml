@@ -106,3 +106,81 @@ jobs:
           }
           EOF
           minilang run smoke.mil
+
+  # Pure-fetch smoke: no local sibling tree on the runner. The installer script
+  # is staged in a temp dir outside any checkout, so it fetches boot + syslib
+  # itself (git clone fallback) and lays down a working prefix.
+  install-fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout boot (script only)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install C toolchain + make
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential make
+
+      - name: Stage standalone installer
+        run: |
+          mkdir -p "$RUNNER_TEMP/standalone/scripts"
+          cp scripts/install.sh "$RUNNER_TEMP/standalone/scripts/"
+
+      - name: Run installer (pure fetch)
+        env:
+          MINILANG_PREFIX: ${{ github.workspace }}/ml-fetch-prefix
+        run: bash "$RUNNER_TEMP/standalone/scripts/install.sh"
+
+      - name: Verify installed command
+        env:
+          PREFIX: ${{ github.workspace }}/ml-fetch-prefix
+        run: |
+          export PATH="$PREFIX/bin:$PATH"
+          cat > smoke.mil <<'EOF'
+          func main() {
+              println "fetched OK";
+              return 0;
+          }
+          EOF
+          minilang run smoke.mil
+
+  # Archive fallback smoke: force the no-git path (MINILANG_NO_GIT=1), which
+  # downloads codeload tarballs and extracts them instead of cloning.
+  install-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout boot (script only)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install C toolchain + make
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential make
+
+      - name: Stage standalone installer
+        run: |
+          mkdir -p "$RUNNER_TEMP/standalone/scripts"
+          cp scripts/install.sh "$RUNNER_TEMP/standalone/scripts/"
+
+      - name: Run installer (archive fallback)
+        env:
+          MINILANG_PREFIX: ${{ github.workspace }}/ml-archive-prefix
+          MINILANG_NO_GIT: '1'
+        run: bash "$RUNNER_TEMP/standalone/scripts/install.sh"
+
+      - name: Verify installed command
+        env:
+          PREFIX: ${{ github.workspace }}/ml-archive-prefix
+        run: |
+          export PATH="$PREFIX/bin:$PATH"
+          cat > smoke.mil <<'EOF'
+          func main() {
+              println "archive OK";
+              return 0;
+          }
+          EOF
+          minilang run smoke.mil
