@@ -34,7 +34,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = $PSScriptRoot
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 
 function Log($m) { Write-Host "[install] $m" }
