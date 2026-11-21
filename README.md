@@ -29,7 +29,7 @@ The installer fetches the source, compiles on site, lays down a user prefix,
 adds `bin` to `PATH`, and runs a smoke check.
 
 ```bash
-bash scripts/install.sh          # Unix; prefix ~/.local (MINILANG_PREFIX to override)
+bash scripts/install.sh          # Unix (Linux / macOS); prefix ~/.local (MINILANG_PREFIX to override)
 ```
 
 ```powershell
