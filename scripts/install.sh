@@ -17,7 +17,7 @@
 # Environment / flags:
 #   MINILANG_PREFIX   install prefix (default $HOME/.local)
 #   MINILANG_BOOT_REPO git URL to clone when no local checkout is used
-#   MINILANG_BRANCH   branch/tag to clone (default experiment/asm-gen)
+#   MINILANG_BRANCH   branch/tag to clone (default main; empty = remote HEAD)
 #   BOOT_SOURCE       reuse an existing boot source tree instead of cloning
 #   KEEP_WORK=1       keep the temporary build tree for inspection
 set -eu
@@ -27,7 +27,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PREFIX="${MINILANG_PREFIX:-$HOME/.local}"
 REPO_URL="${MINILANG_BOOT_REPO:-https://github.com/HFunction2013/minilang-boot.git}"
-BRANCH="${MINILANG_BRANCH:-experiment/asm-gen}"
+BRANCH="${MINILANG_BRANCH:-main}"
 BOOT_SOURCE="${BOOT_SOURCE:-}"
 
 log()  { printf '\033[1;36m[install]\033[0m %s\n' "$*"; }
@@ -62,8 +62,13 @@ if [ -z "$BOOT_SOURCE" ] && [ -f "$REPO_ROOT/main.c" ]; then
     log "Using local checkout: $BOOT_SOURCE"
 else
     WORK="$(mktemp -d)"
-    log "Cloning $REPO_URL ($BRANCH) -> $WORK/boot"
-    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$WORK/boot"
+    if [ -n "$BRANCH" ]; then
+        log "Cloning $REPO_URL ($BRANCH) -> $WORK/boot"
+        git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$WORK/boot"
+    else
+        log "Cloning $REPO_URL (remote HEAD) -> $WORK/boot"
+        git clone --depth 1 "$REPO_URL" "$WORK/boot"
+    fi
     BOOT_SOURCE="$WORK/boot"
     ( cd "$BOOT_SOURCE" && git submodule update --init --recursive ) || \
         warn "syslib submodule did not initialize; system modules may be missing"
