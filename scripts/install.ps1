@@ -79,6 +79,17 @@ New-Item -ItemType Directory -Force -Path $BinDir, (Join-Path $Lib 'syslib'), (J
 
 Copy-Item $BootExe (Join-Path $BinDir 'minilang.exe') -Force
 
+# Import library produced by the build (MSVC minilang.lib, MinGW
+# libminilang.dll.a) lives next to the exe so prebuilt extension DLLs link it.
+foreach ($imp in 'minilang.lib','libminilang.dll.a') {
+    $candidates = @(
+        (Join-Path $Source $imp),
+        (Join-Path $Source "build\Release\$imp"),
+        (Join-Path $Source "build\$imp")
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { Copy-Item $c $BinDir -Force } }
+}
+
 foreach ($f in 'runtime.c','minilang.h','minilang_runtime.h') {
     $src = Join-Path $Source $f
     if (Test-Path $src) { Copy-Item $src (Join-Path $Lib $f) -Force }

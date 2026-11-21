@@ -90,6 +90,14 @@ mkdir -p "$BINDIR" "$LIB/syslib" "$PREFIX/bin"
 cp "$BOOT_BIN" "$BINDIR/minilang"
 chmod +x "$BINDIR/minilang"
 
+# Import library produced by the build (MSVC minilang.lib, MinGW
+# libminilang.dll.a) lives next to the exe so prebuilt extension DLLs can
+# link against the installed binary.
+for imp in "$BOOT_SOURCE/minilang.lib" "$BOOT_SOURCE/libminilang.dll.a" \
+           "$BOOT_SOURCE/build/Release/minilang.lib" "$BOOT_SOURCE/build/libminilang.dll.a"; do
+    [ -f "$imp" ] && cp "$imp" "$BINDIR/"
+done
+
 for f in runtime.c minilang.h minilang_runtime.h; do
     [ -f "$BOOT_SOURCE/$f" ] && cp "$BOOT_SOURCE/$f" "$LIB/"
 done
