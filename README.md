@@ -23,6 +23,22 @@ Split out of [`minilang-compiler`](https://github.com/HFunction2013/minilang-com
 | `native.c` | registry + built-in **native methods** (`sqrt`, `abs`, `time`, `getenv`, …) |
 | `main.c` | CLI: `run / bytecode / dump-text / c / build -b|-e / repl / self-test` |
 
+## Install
+
+The installer fetches the source, compiles on site, lays down a user prefix,
+adds `bin` to `PATH`, and runs a smoke check.
+
+```bash
+bash scripts/install.sh          # Unix; prefix ~/.local (MINILANG_PREFIX to override)
+```
+
+```powershell
+.\scripts\install.ps1            # Windows; prefix %LOCALAPPDATA%\Programs\minilang
+```
+
+Layout: `bin/minilang` (PATH wrapper), `lib/minilang/bin/minilang(.exe)` (boot
+binary), `lib/minilang/` (runtime C sources/headers, `syslib/`).
+
 ## Build
 
 ```bash

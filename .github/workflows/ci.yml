@@ -67,3 +67,36 @@ jobs:
             echo "--- $f ---"
             "$BIN" run "$f"
           done
+
+  # Installer smoke: build on site via scripts/install.sh, lay down the prefix,
+  # add PATH, and run the installed command from a clean shell.
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout boot
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install C toolchain + make (Ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential make
+
+      - name: Run installer
+        env:
+          MINILANG_PREFIX: ${{ github.workspace }}/ml-prefix
+        run: bash scripts/install.sh
+
+      - name: Verify installed command
+        env:
+          PREFIX: ${{ github.workspace }}/ml-prefix
+        run: |
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          cat > smoke.mil <<'EOF'
+          func main() {
+              println "installed OK";
+              return 0;
+          }
+          EOF
+          minilang run smoke.mil
