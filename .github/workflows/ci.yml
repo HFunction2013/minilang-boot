@@ -93,6 +93,7 @@ jobs:
           PREFIX: ${{ github.workspace }}/ml-prefix
         run: |
           echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          export PATH="$PREFIX/bin:$PATH"
           cat > smoke.mil <<'EOF'
           func main() {
               println "installed OK";
