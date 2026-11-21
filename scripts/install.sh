@@ -50,7 +50,11 @@ done
 
 # ---- 1. Locate source: explicit override, local checkout, else clone ----
 WORK=""
-cleanup() { [ -n "$WORK" ] && [ -d "$WORK" ] && [ "${KEEP_WORK:-0}" != "1" ] && rm -rf "$WORK"; }
+cleanup() {
+    if [ -n "$WORK" ] && [ -d "$WORK" ] && [ "${KEEP_WORK:-0}" != "1" ]; then
+        rm -rf "$WORK"
+    fi
+}
 trap cleanup EXIT
 
 if [ -z "$BOOT_SOURCE" ] && [ -f "$REPO_ROOT/main.c" ]; then
