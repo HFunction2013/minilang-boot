@@ -71,7 +71,11 @@ jobs:
   # Installer smoke: build on site via scripts/install.sh, lay down the prefix,
   # add PATH, and run the installed command from a clean shell.
   install:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout boot
         uses: actions/checkout@v4
@@ -79,6 +83,7 @@ jobs:
           submodules: true
 
       - name: Install C toolchain + make (Ubuntu)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential make
