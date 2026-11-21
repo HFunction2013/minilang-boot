@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=gnu11
-SRCS = value.c lexer.c parser.c bytecode.c vm.c llvm_gen.c milc_io.c native.c runtime.c main.c
+CFLAGS = -Wall -Wextra -O2 -std=gnu11 -DMINILANG_EXPORTS
+SRCS = value.c lexer.c parser.c bytecode.c vm.c c_gen.c milc_io.c native.c runtime.c main.c
 OBJS = $(SRCS:.c=.o)
 TARGET = minilang
 
@@ -9,7 +9,7 @@ TARGET = minilang
 # from the main binary. Linux/macOS use --export-dynamic; Windows (MinGW) has
 # no such flag and exports every symbol explicitly.
 ifeq ($(OS),Windows_NT)
-EXPORT_LDFLAGS = -Wl,--export-all-symbols
+EXPORT_LDFLAGS = -Wl,--export-all-symbols -Wl,--out-implib=libminilang.dll.a
 else
 UNAME := $(shell uname)
 ifeq ($(UNAME),Linux)
@@ -30,7 +30,8 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET) *.ll *.o tests/*.ll tests/*.o tests/*_native
+	rm -f $(OBJS) $(TARGET) *.o tests/*.o tests/*_native
+	rm -f tests/*.c
 
 # The .mil test programs live in the sibling minilang-compiler checkout since
 # the toolchain split (2026-10). Prefer a local tests/ dir when present, then

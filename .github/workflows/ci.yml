@@ -19,18 +19,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: HFunction2013/minilang-compiler
+          ref: ${{ github.head_ref || github.ref_name }}
           path: minilang-compiler
           submodules: true
 
-      - name: Install LLVM + build tools (Ubuntu)
+      - name: Install C toolchain + make (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang build-essential make
-
-      - name: Install LLVM (macOS)
-        if: runner.os == 'macOS'
-        run: brew install llvm
+          sudo apt-get install -y build-essential make
 
       - name: Build (Unix)
         if: runner.os != 'Windows'
@@ -70,3 +67,42 @@ jobs:
             echo "--- $f ---"
             "$BIN" run "$f"
           done
+
+  # Installer smoke: build on site via scripts/install.sh, lay down the prefix,
+  # add PATH, and run the installed command from a clean shell.
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout boot
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install C toolchain + make (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential make
+
+      - name: Run installer
+        env:
+          MINILANG_PREFIX: ${{ github.workspace }}/ml-prefix
+        run: bash scripts/install.sh
+
+      - name: Verify installed command
+        env:
+          PREFIX: ${{ github.workspace }}/ml-prefix
+        run: |
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          export PATH="$PREFIX/bin:$PATH"
+          cat > smoke.mil <<'EOF'
+          func main() {
+              println "installed OK";
+              return 0;
+          }
+          EOF
+          minilang run smoke.mil

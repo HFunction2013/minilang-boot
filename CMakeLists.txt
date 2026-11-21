@@ -13,7 +13,7 @@ set(SOURCES
     parser.c
     bytecode.c
     vm.c
-    llvm_gen.c
+    c_gen.c
     milc_io.c
     native.c
     runtime.c
@@ -21,6 +21,10 @@ set(SOURCES
 )
 
 add_executable(minilang ${SOURCES})
+
+# Export the ml_* runtime helpers so a prebuilt extension DLL can resolve them
+# against this executable (MINI_API in minilang_runtime.h maps to dllexport).
+target_compile_definitions(minilang PRIVATE MINILANG_EXPORTS)
 
 # MSVC-specific: disable warnings about CRT deprecation (strdup etc. are
 # mapped to _strdup in minilang.h, but MSVC still warns).
@@ -32,4 +36,14 @@ endif()
 # On non-Windows, link math library for sqrt etc.
 if(NOT WIN32)
     target_link_libraries(minilang PRIVATE m)
+endif()
+
+# MinGW: export every host helper and emit a GNU import library
+# (libminilang.dll.a) so a prebuilt MinGW extension DLL can link against this
+# executable. MSVC emits minilang.lib automatically for dllexport symbols; ld
+# does neither by default.
+if(MINGW)
+    target_link_options(minilang PRIVATE
+        "-Wl,--export-all-symbols"
+        "-Wl,--out-implib=libminilang.dll.a")
 endif()

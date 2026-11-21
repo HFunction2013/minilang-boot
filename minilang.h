@@ -16,15 +16,20 @@
 #define access     _access
 #define unlink     _unlink
 #define PATH_MAX   _MAX_PATH
-/* realpath(): POSIX. MSVC has _fullpath which has the same semantics for
-   our use (resolve a path into an absolute path in the second buffer). */
-static inline char *realpath(const char *path, char *resolved) {
-    return _fullpath(resolved, path, _MAX_PATH) ? resolved : NULL;
-}
 /* __attribute__((unused)) is GCC/Clang only. MSVC: no-op. */
 #define __attribute__(x)
 /* MSVC C mode needs inline spelled __inline */
 #define inline __inline
+#endif
+#if defined(_WIN32)
+/* realpath(): POSIX. Both MSVC and MinGW-w64 expose _fullpath, which has the
+   same semantics for our use (resolve a path into the second buffer). MinGW
+   hides the POSIX realpath prototype under strict feature-test macros, so
+   route through _fullpath instead of relying on it. */
+static inline char *_ml_fullpath(const char *path, char *resolved) {
+    return _fullpath(resolved, path, _MAX_PATH) ? resolved : NULL;
+}
+#define realpath _ml_fullpath
 #endif
 
 /* ===================== Value types ===================== */
@@ -330,6 +335,9 @@ typedef Value (*NativeFn)(VM *vm, Value *args, int argc);
 
 /* Register a C native method under `name`. Overwrites any previous entry. */
 void ml_native_register(const char *name, NativeFn fn);
+/* Register a packed-ABI entry point (dlsym'd from a prebuilt shared library),
+ * wrapped in a prebuilt arity trampoline for the interpreted VM. */
+void ml_native_register_packed(const char *name, void *fn, int arity);
 /* Look up a native method by name; returns NULL if not registered. */
 NativeFn ml_native_lookup(const char *name);
 /* Ensure the built-in native method table (syslib natives) is registered. */
@@ -342,8 +350,8 @@ void ml_native_register_builtins(void);
 int ml_ext_build_and_load(const char **ext_paths, int nextc,
                           const char **names, const int *params, int nd);
 
-/* ===================== LLVM IR Gen ===================== */
-char *generate_llvm_ir(Parser *p);
+/* ===================== C source Gen ===================== */
+char *generate_c_source(Parser *p);
 
 /* ===================== Utility ===================== */
 char *read_file(const char *path);
